@@ -94,18 +94,23 @@ struct BoardView: View {
     let tasks: [TaskItem]
     let onSelect: (TaskItem) -> Void
 
+    /// Set synchronously when a drag starts so drops can apply without
+    /// waiting for the async NSItemProvider round-trip.
+    @State private var draggingTaskId: Int64?
+
     var body: some View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(TaskStatus.boardColumns) { status in
                     BoardColumn(status: status,
                                 tasks: tasks.filter { $0.status == status },
+                                draggingTaskId: $draggingTaskId,
                                 onSelect: onSelect)
                 }
             }
             .padding(14)
         }
-        .background(Color(nsColor: .underPageBackgroundColor))
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -113,6 +118,7 @@ struct BoardColumn: View {
     @EnvironmentObject private var store: Store
     let status: TaskStatus
     let tasks: [TaskItem]
+    @Binding var draggingTaskId: Int64?
     let onSelect: (TaskItem) -> Void
 
     @State private var isTargeted = false
@@ -136,7 +142,10 @@ struct BoardColumn: View {
                     ForEach(tasks) { task in
                         TaskCardView(task: task)
                             .onTapGesture { onSelect(task) }
-                            .onDrag { NSItemProvider(object: NSString(string: "\(task.id)")) }
+                            .onDrag {
+                                draggingTaskId = task.id
+                                return NSItemProvider(object: NSString(string: "\(task.id)"))
+                            }
                     }
                 }
                 .padding(2)
@@ -151,6 +160,15 @@ struct BoardColumn: View {
                 .fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.primary.opacity(0.035))
         )
         .onDrop(of: [.text], isTargeted: $isTargeted) { providers in
+            // Fast path: the id captured at drag start lets the move apply
+            // in the same frame as the drop — no async decode, no flicker.
+            if let id = draggingTaskId {
+                draggingTaskId = nil
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    store.moveTask(id: id, to: status)
+                }
+                return true
+            }
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: NSString.self) { object, _ in
                 guard let string = object as? NSString, let id = Int64(string as String) else { return }
