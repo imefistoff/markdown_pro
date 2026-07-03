@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "xcodebuild": {
+      "command": "npx",
+      "args": ["-y", "xcodebuildmcp@latest"]
+    },
+    "markdownpro": {
+      "command": "./mcp-server/.build/release/markdownpro-mcp",
+      "args": []
+    }
+  }
+}
