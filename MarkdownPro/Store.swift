@@ -155,7 +155,7 @@ final class Store: ObservableObject {
         perform { try $0.removeLabel(taskId: taskId, labelId: labelId) }
     }
 
-    func allLabels() -> [Label] {
+    func allLabels() -> [MarkdownProCore.Label] {
         guard let repo else { return [] }
         return (try? repo.listLabels()) ?? []
     }
