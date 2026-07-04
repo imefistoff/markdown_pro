@@ -28,6 +28,12 @@ enum ToolCatalog {
         "description": "Task priority"
     ]
 
+    private static let attentionProp: [String: Any] = [
+        "type": "string",
+        "enum": ["needs_review", "changes_requested", "ready_to_execute", "executing"],
+        "description": "Workflow attention flag"
+    ]
+
     static let definitions: [[String: Any]] = [
         tool("list_projects",
              "List all projects with task counts and progress. Call this first to find project ids.",
@@ -48,7 +54,8 @@ enum ToolCatalog {
              properties: [
                 "project_id": ["type": "integer", "description": "Filter by project id"],
                 "status": statusProp,
-                "label": ["type": "string", "description": "Filter by label name"]
+                "label": ["type": "string", "description": "Filter by label name"],
+                "attention": attentionProp
              ]),
 
         tool("get_task",
@@ -119,7 +126,9 @@ enum ToolCatalog {
                 "task_id": ["type": "integer", "description": "Task to attach to"],
                 "project_id": ["type": "integer", "description": "Project to attach to"],
                 "path": ["type": "string", "description": "Absolute path to the .md file"],
-                "title": ["type": "string", "description": "Display title (defaults to file name)"]
+                "title": ["type": "string", "description": "Display title (defaults to file name)"],
+                "kind": ["type": "string", "enum": ["note", "wiki"],
+                         "description": "Document kind (default note). Use submit_for_review for proposals."]
              ],
              required: ["path"]),
 
@@ -130,6 +139,44 @@ enum ToolCatalog {
                 "name": ["type": "string", "description": "Label name, e.g. bug, feature, claude"],
                 "color": ["type": "string", "description": "Hex color (optional)"]
              ],
-             required: ["task_id", "name"])
+             required: ["task_id", "name"]),
+
+        tool("submit_for_review",
+             "Submit a markdown proposal for the user's review. Registers the file as a proposal " +
+             "on the task, flags the task needs_review, and puts it in the app's Review queue. " +
+             "Resubmitting the same file after addressing feedback starts a new round.",
+             properties: [
+                "task_id": ["type": "integer", "description": "Task the proposal belongs to"],
+                "path": ["type": "string", "description": "Absolute path to the .md file (must exist)"],
+                "title": ["type": "string", "description": "Display title (defaults to file name)"]
+             ],
+             required: ["task_id", "path"]),
+
+        tool("get_review_feedback",
+             "Get the review state and the user's inline annotations for a proposal. " +
+             "Open annotations on a changes_requested doc are the actionable feedback: " +
+             "each has the quoted text plus surrounding context and the user's comment.",
+             properties: [
+                "document_id": ["type": "integer", "description": "Document id (from submit_for_review or get_task)"]
+             ],
+             required: ["document_id"]),
+
+        tool("resolve_annotation",
+             "Mark a review annotation as addressed, with a short reply describing what you did. " +
+             "Do this for every open annotation before resubmitting a revised proposal.",
+             properties: [
+                "annotation_id": ["type": "integer", "description": "Annotation id (from get_review_feedback)"],
+                "reply": ["type": "string", "description": "What you changed in response"]
+             ],
+             required: ["annotation_id", "reply"]),
+
+        tool("set_attention",
+             "Set or clear a task's workflow attention flag. Set executing when you start " +
+             "implementing an approved proposal; clear it (omit attention) when done.",
+             properties: [
+                "task_id": ["type": "integer", "description": "Task id"],
+                "attention": attentionProp
+             ],
+             required: ["task_id"])
     ]
 }

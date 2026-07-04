@@ -110,7 +110,7 @@ final class MCPServer {
         case "create_project":
             let projectName = try requireString(args, "name")
             let id = try repo.createProject(name: projectName, color: string(args, "color") ?? "#5E6AD2")
-            return jsonText(["project_id": id, "message": "Created project “\(projectName)”"])
+            return jsonText(["project_id": id, "message": "Created project \(projectName)"])
 
         case "list_tasks":
             let status = try string(args, "status").map { raw -> TaskStatus in
@@ -119,15 +119,31 @@ final class MCPServer {
                 }
                 return s
             }
+            let attention = try string(args, "attention").map { raw -> TaskAttention in
+                guard let a = TaskAttention(rawValue: raw) else {
+                    throw ToolError.badArgument("attention must be one of needs_review|changes_requested|ready_to_execute|executing")
+                }
+                return a
+            }
             let tasks = try repo.listTasks(projectId: int(args, "project_id"),
                                            status: status,
-                                           labelName: string(args, "label"))
+                                           labelName: string(args, "label"),
+                                           attention: attention)
             return jsonText(tasks.map(Encode.taskSummary))
 
         case "get_task":
             let id = try requireInt(args, "task_id")
             guard let detail = try repo.getTask(id: id) else { throw ToolError.notFound("task \(id)") }
-            return jsonText(Encode.taskDetail(detail))
+            var dict = Encode.taskDetail(detail)
+            dict["linked_documents"] = try detail.documents.map { doc -> [String: Any] in
+                var d = Encode.document(doc)
+                if doc.kind == .proposal {
+                    d["open_annotations"] = try repo.annotations(documentId: doc.id)
+                        .filter { $0.state == .open }.count
+                }
+                return d
+            }
+            return jsonText(dict)
 
         case "create_task":
             let projectId = try requireInt(args, "project_id")
@@ -197,8 +213,9 @@ final class MCPServer {
             guard taskId != nil || projectId != nil else {
                 throw ToolError.badArgument("provide task_id and/or project_id")
             }
+            let kind = string(args, "kind").flatMap(DocumentKind.init(rawValue:)) ?? .note
             let id = try repo.attachDocument(taskId: taskId, projectId: projectId,
-                                             path: path, title: string(args, "title"))
+                                             path: path, title: string(args, "title"), kind: kind)
             return jsonText(["document_id": id, "message": "Document attached"])
 
         case "add_label":
@@ -206,7 +223,48 @@ final class MCPServer {
             let labelName = try requireString(args, "name")
             guard try repo.getTask(id: id) != nil else { throw ToolError.notFound("task \(id)") }
             try repo.addLabel(taskId: id, name: labelName, color: string(args, "color") ?? "#8B5CF6")
-            return jsonText(["message": "Label “\(labelName)” added to task \(id)"])
+            return jsonText(["message": "Label \(labelName) added to task \(id)"])
+
+        case "submit_for_review":
+            let taskId = try requireInt(args, "task_id")
+            let path = try requireString(args, "path")
+            let expanded = (path as NSString).expandingTildeInPath
+            guard FileManager.default.fileExists(atPath: expanded) else {
+                throw ToolError.badArgument("file does not exist: \(expanded)")
+            }
+            guard try repo.getTask(id: taskId) != nil else { throw ToolError.notFound("task \(taskId)") }
+            let docId = try repo.submitForReview(taskId: taskId, path: expanded, title: string(args, "title"))
+            guard let doc = try repo.document(id: docId) else { throw ToolError.notFound("document \(docId)") }
+            return jsonText(["document_id": docId, "state": "needs_review", "round": doc.round,
+                             "message": "Submitted \(doc.title) for review (round \(doc.round))"])
+
+        case "get_review_feedback":
+            let docId = try requireInt(args, "document_id")
+            guard let doc = try repo.document(id: docId) else { throw ToolError.notFound("document \(docId)") }
+            let annotations = try repo.annotations(documentId: docId)
+            var dict = Encode.document(doc)
+            dict["annotations"] = annotations.map(Encode.annotation)
+            dict["open_annotations"] = annotations.filter { $0.state == .open }.count
+            return jsonText(dict)
+
+        case "resolve_annotation":
+            let annotationId = try requireInt(args, "annotation_id")
+            let reply = try requireString(args, "reply")
+            try repo.resolveAnnotation(id: annotationId, reply: reply)
+            return jsonText(["message": "Annotation \(annotationId) marked addressed"])
+
+        case "set_attention":
+            let taskId = try requireInt(args, "task_id")
+            guard try repo.getTask(id: taskId) != nil else { throw ToolError.notFound("task \(taskId)") }
+            var attention: TaskAttention?
+            if let raw = string(args, "attention") {
+                guard let parsed = TaskAttention(rawValue: raw) else {
+                    throw ToolError.badArgument("attention must be one of needs_review|changes_requested|ready_to_execute|executing")
+                }
+                attention = parsed
+            }
+            try repo.setAttention(taskId: taskId, attention: attention)
+            return jsonText(["message": attention.map { "Attention set to \($0.rawValue)" } ?? "Attention cleared"])
 
         default:
             throw ToolError.notFound("tool \(name)")
@@ -283,6 +341,7 @@ enum Encode {
         ]
         if let due = t.dueDate { dict["due_date"] = DateCoding.encodeDay(due) }
         if !t.details.isEmpty { dict["details"] = t.details }
+        if let attention = t.attention { dict["attention"] = attention.rawValue }
         return dict
     }
 
@@ -295,9 +354,24 @@ enum Encode {
         dict["activity"] = d.activity.prefix(20).map { a -> [String: Any] in
             ["actor": a.actor, "kind": a.kind, "message": a.message, "at": DateCoding.encode(a.createdAt)]
         }
-        dict["linked_documents"] = d.documents.map { doc -> [String: Any] in
-            ["id": doc.id, "title": doc.title, "path": doc.path]
-        }
+        dict["linked_documents"] = d.documents.map(Encode.document)
+        return dict
+    }
+
+    static func document(_ d: LinkedDocument) -> [String: Any] {
+        var dict: [String: Any] = ["id": d.id, "title": d.title, "path": d.path,
+                                   "kind": d.kind.rawValue, "round": d.round]
+        if let state = d.state { dict["state"] = state.rawValue }
+        if let taskId = d.taskId { dict["task_id"] = taskId }
+        return dict
+    }
+
+    static func annotation(_ a: MarkdownProCore.Annotation) -> [String: Any] {
+        var dict: [String: Any] = ["id": a.id, "round": a.round, "quote": a.quote,
+                                   "prefix": a.prefix, "suffix": a.suffix,
+                                   "comment": a.comment, "author": a.author,
+                                   "state": a.state.rawValue]
+        if let reply = a.reply { dict["reply"] = reply }
         return dict
     }
 }
