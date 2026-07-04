@@ -110,6 +110,9 @@ private struct ReviewDocumentView: View {
                 .frame(width: 300)
         }
         .onAppear(perform: load)
+        // A resubmission bumps the round on the same document row; reload so
+        // the rendered text can't go stale while this doc stays selected.
+        .onChange(of: item.document.round) { _, _ in load() }
         .confirmationDialog("Reject this proposal?", isPresented: $confirmReject) {
             Button("Reject — task returns to Todo", role: .destructive) { verdict(.reject) }
         } message: {
