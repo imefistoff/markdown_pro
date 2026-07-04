@@ -62,6 +62,7 @@ struct TaskDetailView: View {
                         .font(.title2.bold())
                         .textFieldStyle(.plain)
                         .onSubmit(commitTextEdits)
+                        .accessibilityIdentifier("taskTitleField")
 
                     // Status / priority / due date
                     HStack(spacing: 16) {

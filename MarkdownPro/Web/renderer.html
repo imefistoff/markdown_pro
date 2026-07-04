@@ -101,6 +101,16 @@
   }
   initMermaid();
 
+  // In-page anchor links (#heading) scroll within the document instead of
+  // navigating the web view away (the <base> tag would otherwise break them).
+  document.getElementById('content').addEventListener('click', function (e) {
+    var a = e.target.closest ? e.target.closest('a[href^="#"]') : null;
+    if (!a) return;
+    var id = decodeURIComponent(a.getAttribute('href').slice(1));
+    var target = id ? document.getElementById(id) : document.body;
+    if (target) { e.preventDefault(); target.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  });
+
   // Re-theme mermaid diagrams when the system appearance flips.
   darkQuery.addEventListener('change', function () {
     initMermaid();
@@ -118,6 +128,17 @@
 
     var content = document.getElementById('content');
     content.innerHTML = marked.parse(markdown, { gfm: true });
+
+    // Give headings GitHub-style slug ids so "#anchor" links have targets.
+    var usedSlugs = {};
+    content.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(function (h) {
+      if (h.id) return;
+      var slug = h.textContent.toLowerCase().trim()
+        .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-') || 'section';
+      if (usedSlugs[slug] != null) { usedSlugs[slug]++; slug += '-' + usedSlugs[slug]; }
+      else { usedSlugs[slug] = 0; }
+      h.id = slug;
+    });
 
     // Task lists: nicer checkboxes.
     content.querySelectorAll('li').forEach(function (li) {
