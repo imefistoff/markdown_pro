@@ -71,6 +71,54 @@ struct LabelChip: View {
     }
 }
 
+extension TaskAttention {
+    var iconName: String {
+        switch self {
+        case .needsReview: return "eye"
+        case .changesRequested: return "arrow.uturn.left"
+        case .readyToExecute: return "play.circle"
+        case .executing: return "gearshape.2"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .needsReview: return .orange
+        case .changesRequested: return .yellow
+        case .readyToExecute: return .green
+        case .executing: return .blue
+        }
+    }
+}
+
+extension DocumentState {
+    var color: Color {
+        switch self {
+        case .needsReview: return .orange
+        case .changesRequested: return .yellow
+        case .approved: return .green
+        case .rejected: return .red
+        case .superseded: return .gray
+        }
+    }
+}
+
+/// Small colored capsule used for attention / review-state chips.
+struct AttentionChip: View {
+    let text: String
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        SwiftUI.Label(text, systemImage: icon)
+            .font(.caption2)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.15)))
+    }
+}
+
 extension Date {
     var shortFormatted: String {
         formatted(date: .abbreviated, time: .omitted)

@@ -197,6 +197,11 @@ struct TaskCardView: View {
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
             }
+            if let attention = task.attention {
+                AttentionChip(text: attention.displayName,
+                              icon: attention.iconName,
+                              color: attention.color)
+            }
             if !task.labels.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(task.labels.prefix(3)) { label in
