@@ -3,6 +3,7 @@ import MarkdownProCore
 
 enum SidebarItem: Hashable {
     case stats
+    case review
     case document(String)   // a markdown file path, selected in the sidebar
     case project(Int64)
 }
@@ -53,6 +54,8 @@ struct ContentView: View {
             switch selection {
             case .stats, nil:
                 StatsView()
+            case .review:
+                ReviewCenterView()
             case .document(let path):
                 DocumentRender(docs: docs, path: path)
             case .project(let id):
@@ -64,6 +67,27 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(AppAppearance(rawValue: appearanceRaw)?.colorScheme)
+        .overlay(alignment: .bottom) {
+            if let toast = store.toast {
+                Text(toast)
+                    .font(.callout)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(.ultraThickMaterial))
+                    .shadow(radius: 4)
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .onTapGesture {
+                        selection = .review
+                        store.toast = nil
+                    }
+                    .task {
+                        try? await Task.sleep(for: .seconds(4))
+                        store.toast = nil
+                    }
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: store.toast)
         .onChange(of: selection) { _, sel in
             if case .document(let path) = sel { docs.activate(path) }
         }
@@ -112,6 +136,10 @@ struct SidebarView: View {
             Section("Overview") {
                 SwiftUI.Label("Progress", systemImage: "chart.bar.xaxis")
                     .tag(SidebarItem.stats)
+                SwiftUI.Label("Review", systemImage: "text.badge.checkmark")
+                    .badge(store.reviewQueue.count)
+                    .tag(SidebarItem.review)
+                    .accessibilityIdentifier("reviewSidebarItem")
             }
             documentsSection
             Section("Projects") {
