@@ -202,6 +202,10 @@ final class Store: ObservableObject {
         perform { try $0.deleteAnnotation(id: id) }
     }
 
+    func updateAnnotation(id: Int64, comment: String) {
+        perform { try $0.updateAnnotation(id: id, comment: comment) }
+    }
+
     func applyVerdict(_ verdict: Repository.ReviewVerdict, documentId: Int64) {
         perform { try $0.applyVerdict(verdict, documentId: documentId, actor: "user") }
     }

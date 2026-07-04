@@ -78,6 +78,7 @@ private struct ReviewDocumentView: View {
     @State private var annotations: [MarkdownProCore.Annotation] = []
     @State private var anchored: [Int64: Bool] = [:]
     @State private var pendingSelection: ReviewSelection?
+    @State private var editingAnnotation: MarkdownProCore.Annotation?
     @State private var draftComment = ""
     @State private var scrollTarget: Int64?
     @State private var confirmReject = false
@@ -99,7 +100,7 @@ private struct ReviewDocumentView: View {
                 ReviewWebView(markdown: markdown,
                               baseURL: URL(fileURLWithPath: item.document.path).deletingLastPathComponent(),
                               annotations: currentComments,
-                              onSelection: { pendingSelection = $0 },
+                              onSelection: { if editingAnnotation == nil { pendingSelection = $0 } },
                               onAnnotationClicked: { scrollTarget = $0 },
                               onAnchors: { anchored = $0 })
                 Divider()
@@ -142,6 +143,16 @@ private struct ReviewDocumentView: View {
         store.addAnnotation(documentId: item.document.id, quote: sel.quote,
                             prefix: sel.prefix, suffix: sel.suffix, comment: text)
         pendingSelection = nil
+        draftComment = ""
+        reloadAnnotations()
+    }
+
+    private func saveEdit() {
+        guard let editing = editingAnnotation else { return }
+        let text = draftComment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        store.updateAnnotation(id: editing.id, comment: text)
+        editingAnnotation = nil
         draftComment = ""
         reloadAnnotations()
     }
@@ -208,7 +219,28 @@ private struct ReviewDocumentView: View {
 
     @ViewBuilder
     private var composer: some View {
-        if let sel = pendingSelection {
+        if let editing = editingAnnotation {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("“\(editing.quote)”")
+                    .font(.caption.italic())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                TextField("Comment…", text: $draftComment, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(saveEdit)
+                    .accessibilityIdentifier("commentField")
+                HStack {
+                    Button("Cancel") { editingAnnotation = nil; draftComment = "" }
+                        .controlSize(.small)
+                    Spacer()
+                    Button("Save", action: saveEdit)
+                        .controlSize(.small)
+                        .disabled(draftComment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.08)))
+        } else if let sel = pendingSelection {
             VStack(alignment: .leading, spacing: 6) {
                 Text("“\(sel.quote)”")
                     .font(.caption.italic())
@@ -254,6 +286,10 @@ private struct ReviewDocumentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
         .contextMenu {
+            Button("Edit comment") {
+                editingAnnotation = a
+                draftComment = a.comment
+            }
             Button("Delete comment", role: .destructive) {
                 store.deleteAnnotation(id: a.id)
                 reloadAnnotations()

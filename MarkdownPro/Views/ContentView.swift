@@ -81,7 +81,7 @@ struct ContentView: View {
                         selection = .review
                         store.toast = nil
                     }
-                    .task {
+                    .task(id: toast) {
                         try? await Task.sleep(for: .seconds(4))
                         store.toast = nil
                     }
