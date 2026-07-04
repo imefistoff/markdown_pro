@@ -108,6 +108,10 @@ public enum Database {
             try db.transaction {
                 // Guard each ALTER by column existence so a partially
                 // upgraded DB (crash between processes) migrates cleanly.
+                // Deliberately no CHECK constraints on the new enum-like
+                // columns (kind/state/attention): vocabulary is validated
+                // in Swift (Models.swift enums) so future workflow states
+                // don't require table-rebuild migrations.
                 let docCols = try db.query("PRAGMA table_info(documents)").map { $0.string("name") }
                 if !docCols.contains("kind") {
                     try db.execute("ALTER TABLE documents ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'")

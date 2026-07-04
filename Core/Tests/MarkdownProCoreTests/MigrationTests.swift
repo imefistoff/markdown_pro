@@ -76,4 +76,22 @@ final class MigrationTests: XCTestCase {
         // Second open must not throw (both processes migrate on open).
         XCTAssertNoThrow(try Database.open(path: path))
     }
+
+    // A DB where a previous migration attempt died after adding only some
+    // v2 columns (user_version still 1) must complete cleanly.
+    func testMigrationCompletesPartiallyUpgradedSchema() throws {
+        try makeLegacyDB()
+        do {
+            let partial = try SQLiteConnection(path: path)
+            try partial.execute("ALTER TABLE documents ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'")
+        }
+        let db = try Database.open(path: path)
+        let docCols = try db.query("PRAGMA table_info(documents)").map { $0.string("name") }
+        for col in ["kind", "state", "round", "updated_at"] {
+            XCTAssertTrue(docCols.contains(col), "documents.\(col) missing after partial-upgrade migration")
+        }
+        let taskCols = try db.query("PRAGMA table_info(tasks)").map { $0.string("name") }
+        XCTAssertTrue(taskCols.contains("attention"))
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 2)
+    }
 }
