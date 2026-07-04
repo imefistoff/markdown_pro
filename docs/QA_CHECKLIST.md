@@ -67,3 +67,38 @@ Setup: build and register per README, then in a Claude Code session:
 - [ ] Quit and relaunch → data, reader folders, and view mode (board/list) persist.
 - [ ] Create a task while the MCP server is mid-session → no locking errors (WAL + busy timeout).
 - [ ] A markdown file with a broken mermaid block shows an inline mermaid error, not a blank page.
+
+## §8 Review Center
+
+*Headless e2e (submit → feedback → resolve → resubmit → round 2) verified automatically on 2026-07-04; interactive items below need a human pass.*
+
+Setup: scratch DB (`MARKDOWNPRO_DB=/tmp/qa.sqlite`), one project + task, a
+proposal `.md` submitted via `submit_for_review` (see mcp-server README or
+Task 4 of the review-center plan for the JSON-RPC lines).
+
+- [ ] Sidebar shows **Review** with a badge equal to the number of
+      `needs_review` proposals; badge hides at zero.
+- [ ] Submitting a proposal while the app runs shows the toast within ~2 s;
+      clicking the toast opens Review.
+- [ ] Queue rows show title, task, project, round chip (round ≥ 2 only),
+      and age; selection follows clicks and stays valid after refresh.
+- [ ] Document renders with mermaid + syntax highlighting intact.
+- [ ] Selecting text shows "Comment (c)"; both the button and the `c` key
+      open the composer with the quote; Save paints a highlight.
+- [ ] Selection across a code block and across two paragraphs both anchor.
+- [ ] Clicking a highlight scrolls the panel to its comment.
+- [ ] Comment context menu → Delete removes comment and highlight.
+- [ ] Request Changes is disabled with zero comments; with comments it
+      moves doc → changes_requested, task chip → 🟡, queue advances.
+- [ ] Approve with unsent comments warns ("FYI notes"); approving moves
+      task chip → 🟢 ready to execute.
+- [ ] Reject asks for confirmation; task returns to Todo, chip clears.
+- [ ] After Claude resubmits (round 2): prior comments listed under
+      "Earlier" with green check + reply once resolved; only current-round
+      comments paint highlights.
+- [ ] Editing the file so a quote disappears flags that comment
+      "Unanchored" instead of highlighting the wrong text.
+- [ ] Activity log on the task shows review entries with correct actors
+      (user verdicts, claude submissions/resolutions).
+- [ ] Plain reader (Documents section) still renders and never shows the
+      comment button.
