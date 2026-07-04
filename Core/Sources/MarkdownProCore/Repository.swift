@@ -401,7 +401,7 @@ public final class Repository {
                     [.integer(newRound), title.map { .text($0) } ?? .text(existing.string("title")),
                      .text(now()), .integer(docId)])
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
-                                message: "resubmitted \"\(resolvedTitle)\" for review (round \(newRound))")
+                                message: "resubmitted “\(resolvedTitle)” for review (round \(newRound))")
             } else {
                 try db.execute("""
                     INSERT INTO documents (task_id, project_id, path, title, created_at, kind, state, round, updated_at)
@@ -410,7 +410,7 @@ public final class Repository {
                     [.integer(taskId), .text(expanded), .text(resolvedTitle), .text(now()), .text(now())])
                 docId = db.lastInsertRowId
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
-                                message: "submitted \"\(resolvedTitle)\" for review")
+                                message: "submitted “\(resolvedTitle)” for review")
             }
             try setAttentionColumn(taskId: taskId, TaskAttention.needsReview.rawValue)
             return docId
@@ -475,7 +475,7 @@ public final class Repository {
                            [.text(reply), .text(now()), .integer(id)])
             if let doc = try document(id: documentId), let taskId = doc.taskId {
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
-                                message: "addressed a review comment on \"\(doc.title)\"")
+                                message: "addressed a review comment on “\(doc.title)”")
             }
         }
     }
@@ -503,12 +503,12 @@ public final class Repository {
                 try setDocumentState(.approved, id: documentId)
                 try setAttentionColumn(taskId: taskId, TaskAttention.readyToExecute.rawValue)
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
-                                message: "approved \"\(doc.title)\" — ready to execute")
+                                message: "approved “\(doc.title)” — ready to execute")
             case .requestChanges:
                 try setDocumentState(.changesRequested, id: documentId)
                 try setAttentionColumn(taskId: taskId, TaskAttention.changesRequested.rawValue)
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
-                                message: "requested changes on \"\(doc.title)\" (round \(doc.round))")
+                                message: "requested changes on “\(doc.title)” (round \(doc.round))")
             case .reject:
                 try setDocumentState(.rejected, id: documentId)
                 try setAttentionColumn(taskId: taskId, nil)
@@ -519,7 +519,7 @@ public final class Repository {
                                     message: "moved from \(task.status.displayName) to \(TaskStatus.todo.displayName)")
                 }
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
-                                message: "rejected \"\(doc.title)\"")
+                                message: "rejected “\(doc.title)”")
             }
         }
     }
