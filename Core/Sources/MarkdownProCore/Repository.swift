@@ -417,6 +417,140 @@ public final class Repository {
         }
     }
 
+    private func setDocumentState(_ state: DocumentState, id: Int64) throws {
+        try db.execute("UPDATE documents SET state = ?, updated_at = ? WHERE id = ?",
+                       [.text(state.rawValue), .text(now()), .integer(id)])
+    }
+
+    // MARK: Annotations
+
+    /// Comments persist immediately (crash-safe) as `open`; the verdict is
+    /// what makes them actionable for Claude.
+    @discardableResult
+    public func addAnnotation(documentId: Int64, quote: String, prefix: String = "",
+                              suffix: String = "", comment: String,
+                              author: String = "user") throws -> Int64 {
+        guard let doc = try document(id: documentId) else {
+            throw RepositoryError.notFound("document \(documentId)")
+        }
+        try db.execute("""
+            INSERT INTO annotations (document_id, round, quote, prefix, suffix, comment, author, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [.integer(documentId), .integer(Int64(doc.round)), .text(quote), .text(prefix),
+             .text(suffix), .text(comment), .text(author), .text(now())])
+        return db.lastInsertRowId
+    }
+
+    public func updateAnnotation(id: Int64, comment: String) throws {
+        try db.execute("UPDATE annotations SET comment = ? WHERE id = ?",
+                       [.text(comment), .integer(id)])
+    }
+
+    public func deleteAnnotation(id: Int64) throws {
+        try db.execute("DELETE FROM annotations WHERE id = ?", [.integer(id)])
+    }
+
+    public func annotations(documentId: Int64) throws -> [Annotation] {
+        try db.query("SELECT * FROM annotations WHERE document_id = ? ORDER BY round, id",
+                     [.integer(documentId)]).map {
+            Annotation(id: $0.int("id"), documentId: $0.int("document_id"),
+                       round: Int($0.int("round")), quote: $0.string("quote"),
+                       prefix: $0.string("prefix"), suffix: $0.string("suffix"),
+                       comment: $0.string("comment"), author: $0.string("author"),
+                       state: AnnotationState(rawValue: $0.string("state")) ?? .open,
+                       reply: $0.stringOrNil("reply"), createdAt: $0.date("created_at"),
+                       resolvedAt: $0.dateOrNil("resolved_at"))
+        }
+    }
+
+    public func resolveAnnotation(id: Int64, reply: String, actor: String = "claude") throws {
+        guard let row = try db.query("SELECT document_id FROM annotations WHERE id = ?",
+                                     [.integer(id)]).first else {
+            throw RepositoryError.notFound("annotation \(id)")
+        }
+        let documentId = row.int("document_id")
+        try db.transaction {
+            try db.execute("UPDATE annotations SET state = 'addressed', reply = ?, resolved_at = ? WHERE id = ?",
+                           [.text(reply), .text(now()), .integer(id)])
+            if let doc = try document(id: documentId), let taskId = doc.taskId {
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "addressed a review comment on \"\(doc.title)\"")
+            }
+        }
+    }
+
+    // MARK: Verdicts
+
+    public enum ReviewVerdict: String, Sendable {
+        case approve
+        case requestChanges = "request_changes"
+        case reject
+    }
+
+    /// Single transaction per spec: a crash can never leave
+    /// doc-approved-but-task-unflagged states.
+    public func applyVerdict(_ verdict: ReviewVerdict, documentId: Int64, actor: String = "user") throws {
+        guard let doc = try document(id: documentId) else {
+            throw RepositoryError.notFound("document \(documentId)")
+        }
+        guard let taskId = doc.taskId, let task = try getTask(id: taskId)?.task else {
+            throw RepositoryError.notFound("task for document \(documentId)")
+        }
+        try db.transaction {
+            switch verdict {
+            case .approve:
+                try setDocumentState(.approved, id: documentId)
+                try setAttentionColumn(taskId: taskId, TaskAttention.readyToExecute.rawValue)
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "approved \"\(doc.title)\" — ready to execute")
+            case .requestChanges:
+                try setDocumentState(.changesRequested, id: documentId)
+                try setAttentionColumn(taskId: taskId, TaskAttention.changesRequested.rawValue)
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "requested changes on \"\(doc.title)\" (round \(doc.round))")
+            case .reject:
+                try setDocumentState(.rejected, id: documentId)
+                try setAttentionColumn(taskId: taskId, nil)
+                if task.status != .todo {
+                    try db.execute("UPDATE tasks SET status = 'todo', updated_at = ? WHERE id = ?",
+                                   [.text(now()), .integer(taskId)])
+                    try logActivity(taskId: taskId, actor: actor, kind: "status",
+                                    message: "moved from \(task.status.displayName) to \(TaskStatus.todo.displayName)")
+                }
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "rejected \"\(doc.title)\"")
+            }
+        }
+    }
+
+    // MARK: Queue
+
+    public struct ReviewQueueItem: Identifiable, Sendable {
+        public let document: LinkedDocument
+        public let taskId: Int64
+        public let taskTitle: String
+        public let projectId: Int64
+        public let projectName: String
+        public var id: Int64 { document.id }
+    }
+
+    /// Proposals awaiting a verdict, newest activity first.
+    public func reviewQueue() throws -> [ReviewQueueItem] {
+        try db.query("""
+            SELECT d.*, t.title AS task_title, p.id AS p_id, p.name AS project_name
+            FROM documents d
+            JOIN tasks t ON t.id = d.task_id
+            JOIN projects p ON p.id = t.project_id
+            WHERE d.kind = 'proposal' AND d.state = 'needs_review'
+            ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC
+            """).map { r in
+            ReviewQueueItem(document: linkedDocument(from: r), taskId: r.int("task_id"),
+                            taskTitle: r.string("task_title"), projectId: r.int("p_id"),
+                            projectName: r.string("project_name"))
+        }
+    }
+
     // MARK: - Stats
 
     public struct DayCount: Identifiable, Sendable {

@@ -74,4 +74,84 @@ final class ReviewTests: XCTestCase {
         XCTAssertEqual(try repo.document(id: plain)!.kind, .note)
         XCTAssertNil(try repo.document(id: plain)!.state)
     }
+
+    // Annotation lifecycle: open on the current round, addressed with reply
+    func testAnnotationLifecycle() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        let annId = try repo.addAnnotation(documentId: docId, quote: "use SQLite",
+                                           prefix: "we should ", suffix: " for this",
+                                           comment: "agreed, but WAL mode please")
+        var anns = try repo.annotations(documentId: docId)
+        XCTAssertEqual(anns.count, 1)
+        XCTAssertEqual(anns[0].state, .open)
+        XCTAssertEqual(anns[0].round, 1)
+        XCTAssertEqual(anns[0].author, "user")
+
+        try repo.updateAnnotation(id: annId, comment: "WAL + busy timeout")
+        try repo.resolveAnnotation(id: annId, reply: "done — WAL enabled in SQLite.swift")
+        anns = try repo.annotations(documentId: docId)
+        XCTAssertEqual(anns[0].state, .addressed)
+        XCTAssertEqual(anns[0].comment, "WAL + busy timeout")
+        XCTAssertEqual(anns[0].reply, "done — WAL enabled in SQLite.swift")
+        XCTAssertNotNil(anns[0].resolvedAt)
+
+        try repo.deleteAnnotation(id: annId)
+        XCTAssertTrue(try repo.annotations(documentId: docId).isEmpty)
+    }
+
+    // Annotations made after a resubmission carry the new round
+    func testAnnotationTracksDocumentRound() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        _ = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md") // round 2
+        let annId = try repo.addAnnotation(documentId: docId, quote: "q", comment: "c")
+        XCTAssertEqual(try repo.annotations(documentId: docId).first { $0.id == annId }?.round, 2)
+    }
+
+    // Approve: doc approved, task ready_to_execute
+    func testApproveVerdict() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        try repo.applyVerdict(.approve, documentId: docId)
+        XCTAssertEqual(try repo.document(id: docId)!.state, .approved)
+        XCTAssertEqual(try repo.getTask(id: taskId)!.task.attention, .readyToExecute)
+        XCTAssertTrue(try repo.getTask(id: taskId)!.activity
+            .contains { $0.actor == "user" && $0.kind == "review" && $0.message.contains("approved") })
+    }
+
+    // Request changes: doc + attention both changes_requested
+    func testRequestChangesVerdict() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        try repo.applyVerdict(.requestChanges, documentId: docId)
+        XCTAssertEqual(try repo.document(id: docId)!.state, .changesRequested)
+        XCTAssertEqual(try repo.getTask(id: taskId)!.task.attention, .changesRequested)
+    }
+
+    // Reject: doc rejected, attention cleared, task back to todo
+    func testRejectVerdictMovesTaskToTodo() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        try repo.applyVerdict(.reject, documentId: docId)
+        XCTAssertEqual(try repo.document(id: docId)!.state, .rejected)
+        let task = try repo.getTask(id: taskId)!.task
+        XCTAssertNil(task.attention)
+        XCTAssertEqual(task.status, .todo)
+        XCTAssertTrue(try repo.getTask(id: taskId)!.activity
+            .contains { $0.message == "moved from In Progress to Todo" })
+    }
+
+    // Queue: needs_review proposals only, with task/project context
+    func testReviewQueueContents() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md", title: "Proposal P")
+        _ = try repo.attachDocument(taskId: taskId, projectId: nil, path: "/tmp/n.md", title: "Note")
+        var queue = try repo.reviewQueue()
+        XCTAssertEqual(queue.map(\.id), [docId])
+        XCTAssertEqual(queue[0].taskTitle, "T")
+        XCTAssertEqual(queue[0].projectName, "P")
+        try repo.applyVerdict(.approve, documentId: docId)
+        queue = try repo.reviewQueue()
+        XCTAssertTrue(queue.isEmpty, "verdicted docs leave the queue")
+    }
+
+    // Verdict on an unknown document fails loudly
+    func testVerdictOnMissingDocumentThrows() throws {
+        XCTAssertThrowsError(try repo.applyVerdict(.approve, documentId: 999))
+    }
 }
