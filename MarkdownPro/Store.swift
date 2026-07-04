@@ -12,6 +12,13 @@ final class Store: ObservableObject {
     @Published var errorMessage: String?
     /// Set when another view asks the reader to open a file.
     @Published var pendingReaderURL: URL?
+    @Published private(set) var reviewQueue: [Repository.ReviewQueueItem] = []
+    /// One-shot in-app notification ("Proposal ready: …").
+    @Published var toast: String?
+
+    /// Review-doc ids seen by the last refresh; nil until the first load
+    /// so launch never toasts.
+    private var knownReviewDocIds: Set<Int64>?
 
     private(set) var repo: Repository?
     private var lastDataVersion: Int64 = 0
@@ -72,6 +79,13 @@ final class Store: ObservableObject {
         do {
             projects = try repo.listProjects()
             tasks = try repo.listTasks()
+            let queue = try repo.reviewQueue()
+            if let known = knownReviewDocIds,
+               let fresh = queue.first(where: { !known.contains($0.id) }) {
+                toast = "Proposal ready: \(fresh.document.title)"
+            }
+            knownReviewDocIds = Set(queue.map(\.id))
+            reviewQueue = queue
         } catch {
             errorMessage = "\(error)"
         }
@@ -170,6 +184,26 @@ final class Store: ObservableObject {
 
     func removeDocument(id: Int64) {
         perform { try $0.removeDocument(id: id) }
+    }
+
+    // MARK: - Review
+
+    func annotations(documentId: Int64) -> [MarkdownProCore.Annotation] {
+        guard let repo else { return [] }
+        return (try? repo.annotations(documentId: documentId)) ?? []
+    }
+
+    func addAnnotation(documentId: Int64, quote: String, prefix: String, suffix: String, comment: String) {
+        perform { try $0.addAnnotation(documentId: documentId, quote: quote, prefix: prefix,
+                                       suffix: suffix, comment: comment, author: "user") }
+    }
+
+    func deleteAnnotation(id: Int64) {
+        perform { try $0.deleteAnnotation(id: id) }
+    }
+
+    func applyVerdict(_ verdict: Repository.ReviewVerdict, documentId: Int64) {
+        perform { try $0.applyVerdict(verdict, documentId: documentId, actor: "user") }
     }
 
     // MARK: - Stats
