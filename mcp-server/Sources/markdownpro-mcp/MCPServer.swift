@@ -110,7 +110,7 @@ final class MCPServer {
         case "create_project":
             let projectName = try requireString(args, "name")
             let id = try repo.createProject(name: projectName, color: string(args, "color") ?? "#5E6AD2")
-            return jsonText(["project_id": id, "message": "Created project \(projectName)"])
+            return jsonText(["project_id": id, "message": "Created project “\(projectName)”"])
 
         case "list_tasks":
             let status = try string(args, "status").map { raw -> TaskStatus in
@@ -213,7 +213,13 @@ final class MCPServer {
             guard taskId != nil || projectId != nil else {
                 throw ToolError.badArgument("provide task_id and/or project_id")
             }
-            let kind = string(args, "kind").flatMap(DocumentKind.init(rawValue:)) ?? .note
+            var kind = DocumentKind.note
+            if let raw = string(args, "kind") {
+                guard let parsed = DocumentKind(rawValue: raw), parsed != .proposal else {
+                    throw ToolError.badArgument("kind must be note or wiki (proposals go through submit_for_review)")
+                }
+                kind = parsed
+            }
             let id = try repo.attachDocument(taskId: taskId, projectId: projectId,
                                              path: path, title: string(args, "title"), kind: kind)
             return jsonText(["document_id": id, "message": "Document attached"])
@@ -223,7 +229,7 @@ final class MCPServer {
             let labelName = try requireString(args, "name")
             guard try repo.getTask(id: id) != nil else { throw ToolError.notFound("task \(id)") }
             try repo.addLabel(taskId: id, name: labelName, color: string(args, "color") ?? "#8B5CF6")
-            return jsonText(["message": "Label \(labelName) added to task \(id)"])
+            return jsonText(["message": "Label “\(labelName)” added to task \(id)"])
 
         case "submit_for_review":
             let taskId = try requireInt(args, "task_id")
@@ -236,7 +242,7 @@ final class MCPServer {
             let docId = try repo.submitForReview(taskId: taskId, path: expanded, title: string(args, "title"))
             guard let doc = try repo.document(id: docId) else { throw ToolError.notFound("document \(docId)") }
             return jsonText(["document_id": docId, "state": "needs_review", "round": doc.round,
-                             "message": "Submitted \(doc.title) for review (round \(doc.round))"])
+                             "message": "Submitted “\(doc.title)” for review (round \(doc.round))"])
 
         case "get_review_feedback":
             let docId = try requireInt(args, "document_id")
