@@ -338,6 +338,109 @@ public final class Repository {
         }
     }
 
+    // MARK: - Import
+
+    /// A free project name: `desired`, else "desired (imported)", "desired (imported 2)", …
+    /// Import never merges into an existing project, so a collision becomes a new,
+    /// visibly-named project rather than a silent overwrite.
+    public func availableProjectName(_ desired: String) throws -> String {
+        func isTaken(_ name: String) throws -> Bool {
+            try db.query("SELECT 1 FROM projects WHERE name = ? COLLATE NOCASE LIMIT 1",
+                         [.text(name)]).isEmpty == false
+        }
+        guard try isTaken(desired) else { return desired }
+        let first = "\(desired) (imported)"
+        guard try isTaken(first) else { return first }
+        var suffix = 2
+        while true {
+            let candidate = "\(desired) (imported \(suffix))"
+            if try !isTaken(candidate) { return candidate }
+            suffix += 1
+        }
+    }
+
+    /// Inserts a whole exported project, preserving timestamps, sort order and
+    /// activity history verbatim — unlike `createTask`, which stamps its own
+    /// `created_at` and logs a synthetic "created" entry.
+    ///
+    /// `documentPathResolver` decides where each document should point (a live file
+    /// or a restored copy); returning nil skips that document.
+    ///
+    /// Runs in one transaction: a failure part-way leaves the board untouched.
+    @discardableResult
+    public func insertImportedProject(_ project: ExportedProject,
+                                      name: String,
+                                      documentPathResolver: (ExportedDocument) -> String?) throws -> Int64 {
+        try db.transaction {
+            try db.execute("""
+                INSERT INTO projects (name, color, archived, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [.text(name), .text(project.color), .integer(project.archived ? 1 : 0),
+                 .text(project.createdAt), .text(project.updatedAt)])
+            let projectId = db.lastInsertRowId
+
+            for document in project.documents {
+                try insertImportedDocument(document, taskId: nil, projectId: projectId,
+                                           resolver: documentPathResolver)
+            }
+
+            for task in project.tasks {
+                try db.execute("""
+                    INSERT INTO tasks (project_id, title, details, status, priority, due_date,
+                                       sort_order, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [.integer(projectId), .text(task.title), .text(task.details),
+                     .text(task.status), .text(task.priority),
+                     task.dueDate.map { .text($0) } ?? .null,
+                     .real(task.sortOrder), .text(task.createdAt), .text(task.updatedAt)])
+                let taskId = db.lastInsertRowId
+
+                // addLabel opens no transaction of its own, and already merges by
+                // name while keeping an existing label's colour — exactly what we want.
+                for label in task.labels {
+                    try addLabel(taskId: taskId, name: label.name, color: label.color)
+                }
+
+                for subtask in task.subtasks {
+                    try db.execute("INSERT INTO subtasks (task_id, title, done, sort_order) VALUES (?, ?, ?, ?)",
+                                   [.integer(taskId), .text(subtask.title),
+                                    .integer(subtask.done ? 1 : 0), .real(subtask.sortOrder)])
+                }
+
+                for entry in task.activity {
+                    try db.execute("""
+                        INSERT INTO activity (task_id, actor, kind, message, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        [.integer(taskId), .text(entry.actor), .text(entry.kind),
+                         .text(entry.message), .text(entry.createdAt)])
+                }
+
+                for document in task.documents {
+                    try insertImportedDocument(document, taskId: taskId, projectId: nil,
+                                               resolver: documentPathResolver)
+                }
+            }
+
+            return projectId
+        }
+    }
+
+    /// Raw document insert. Unlike `attachDocument` it logs no activity — imported
+    /// history comes from the bundle, not from the act of importing.
+    private func insertImportedDocument(_ document: ExportedDocument,
+                                        taskId: Int64?,
+                                        projectId: Int64?,
+                                        resolver: (ExportedDocument) -> String?) throws {
+        guard let path = resolver(document) else { return }
+        try db.execute("INSERT INTO documents (task_id, project_id, path, title, created_at) VALUES (?, ?, ?, ?, ?)",
+                       [taskId.map { .integer($0) } ?? .null,
+                        projectId.map { .integer($0) } ?? .null,
+                        .text(path), .text(document.title), .text(now())])
+    }
+
     // MARK: - Stats
 
     public struct DayCount: Identifiable, Sendable {
