@@ -62,6 +62,7 @@ struct TaskDetailView: View {
                         .font(.title2.bold())
                         .textFieldStyle(.plain)
                         .onSubmit(commitTextEdits)
+                        .accessibilityIdentifier("taskTitleField")
 
                     // Status / priority / due date
                     HStack(spacing: 16) {
@@ -78,6 +79,11 @@ struct TaskDetailView: View {
                         }
                         .fixedSize()
                         dueDateControl(detail)
+                        if let attention = detail.task.attention {
+                            AttentionChip(text: attention.displayName,
+                                          icon: attention.iconName,
+                                          color: attention.color)
+                        }
                         Spacer()
                     }
 
@@ -169,6 +175,11 @@ struct TaskDetailView: View {
                                             .foregroundStyle(.tertiary)
                                             .lineLimit(1)
                                             .truncationMode(.middle)
+                                    }
+                                    if let state = doc.state {
+                                        AttentionChip(text: state.displayName,
+                                                      icon: "doc.badge.ellipsis",
+                                                      color: state.color)
                                     }
                                     Spacer()
                                     Button("Open in Reader") {

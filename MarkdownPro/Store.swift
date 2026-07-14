@@ -15,6 +15,13 @@ final class Store: ObservableObject {
     /// Which modal the app is showing, if any. Set by the File menu and the
     /// sidebar context menu; consumed by ContentView.
     @Published var activeSheet: ActiveSheet?
+    @Published private(set) var reviewQueue: [Repository.ReviewQueueItem] = []
+    /// One-shot in-app notification ("Proposal ready: …").
+    @Published var toast: String?
+
+    /// Review-doc ids seen by the last refresh; nil until the first load
+    /// so launch never toasts.
+    private var knownReviewDocIds: Set<Int64>?
 
     enum ActiveSheet: Identifiable {
         case export(preselected: Set<Int64>)
@@ -87,6 +94,13 @@ final class Store: ObservableObject {
         do {
             projects = try repo.listProjects()
             tasks = try repo.listTasks()
+            let queue = try repo.reviewQueue()
+            if let known = knownReviewDocIds,
+               let fresh = queue.first(where: { !known.contains($0.id) }) {
+                toast = "Proposal ready: \(fresh.document.title)"
+            }
+            knownReviewDocIds = Set(queue.map(\.id))
+            reviewQueue = queue
         } catch {
             errorMessage = "\(error)"
         }
@@ -185,6 +199,30 @@ final class Store: ObservableObject {
 
     func removeDocument(id: Int64) {
         perform { try $0.removeDocument(id: id) }
+    }
+
+    // MARK: - Review
+
+    func annotations(documentId: Int64) -> [MarkdownProCore.Annotation] {
+        guard let repo else { return [] }
+        return (try? repo.annotations(documentId: documentId)) ?? []
+    }
+
+    func addAnnotation(documentId: Int64, quote: String, prefix: String, suffix: String, comment: String) {
+        perform { try $0.addAnnotation(documentId: documentId, quote: quote, prefix: prefix,
+                                       suffix: suffix, comment: comment, author: "user") }
+    }
+
+    func deleteAnnotation(id: Int64) {
+        perform { try $0.deleteAnnotation(id: id) }
+    }
+
+    func updateAnnotation(id: Int64, comment: String) {
+        perform { try $0.updateAnnotation(id: id, comment: comment) }
+    }
+
+    func applyVerdict(_ verdict: Repository.ReviewVerdict, documentId: Int64) {
+        perform { try $0.applyVerdict(verdict, documentId: documentId, actor: "user") }
     }
 
     // MARK: - Stats

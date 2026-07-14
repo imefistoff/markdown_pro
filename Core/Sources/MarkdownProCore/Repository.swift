@@ -12,6 +12,16 @@ public final class Repository {
 
     private func now() -> String { DateCoding.encode(Date()) }
 
+    public enum RepositoryError: Error, CustomStringConvertible {
+        case notFound(String)
+
+        public var description: String {
+            switch self {
+            case .notFound(let m): return "not found: \(m)"
+            }
+        }
+    }
+
     // MARK: - Projects
 
     public func listProjects(includeArchived: Bool = false) throws -> [Project] {
@@ -63,7 +73,8 @@ public final class Repository {
                  createdAt: r.date("created_at"), updatedAt: r.date("updated_at"),
                  labels: [], subtaskCount: Int(r.int("subtask_count")),
                  subtaskDoneCount: Int(r.int("subtask_done_count")),
-                 documentCount: Int(r.int("document_count")))
+                 documentCount: Int(r.int("document_count")),
+                 attention: r.stringOrNil("attention").flatMap(TaskAttention.init(rawValue:)))
     }
 
     private static let taskSelect = """
@@ -74,7 +85,8 @@ public final class Repository {
         FROM tasks t
         """
 
-    public func listTasks(projectId: Int64? = nil, status: TaskStatus? = nil, labelName: String? = nil) throws -> [TaskItem] {
+    public func listTasks(projectId: Int64? = nil, status: TaskStatus? = nil,
+                          labelName: String? = nil, attention: TaskAttention? = nil) throws -> [TaskItem] {
         var clauses: [String] = []
         var bindings: [SQLValue] = []
         if let projectId {
@@ -91,6 +103,10 @@ public final class Repository {
                          JOIN labels l ON l.id = tl.label_id WHERE l.name = ? COLLATE NOCASE)
                 """)
             bindings.append(.text(labelName))
+        }
+        if let attention {
+            clauses.append("t.attention = ?")
+            bindings.append(.text(attention.rawValue))
         }
         let whereSQL = clauses.isEmpty ? "" : "WHERE " + clauses.joined(separator: " AND ")
         let rows = try db.query("\(Self.taskSelect) \(whereSQL) ORDER BY t.sort_order, t.id", bindings)
@@ -130,8 +146,7 @@ public final class Repository {
             .map { ActivityEntry(id: $0.int("id"), taskId: $0.int("task_id"), actor: $0.string("actor"),
                                  kind: $0.string("kind"), message: $0.string("message"), createdAt: $0.date("created_at")) }
         let documents = try db.query("SELECT * FROM documents WHERE task_id = ? ORDER BY id DESC", [.integer(id)])
-            .map { LinkedDocument(id: $0.int("id"), taskId: $0.intOrNil("task_id"), projectId: $0.intOrNil("project_id"),
-                                  path: $0.string("path"), title: $0.string("title"), createdAt: $0.date("created_at")) }
+            .map(linkedDocument(from:))
         return TaskDetail(task: tasks[0], subtasks: subtasks, activity: activity, documents: documents)
     }
 
@@ -308,14 +323,30 @@ public final class Repository {
 
     // MARK: - Documents
 
+    private func linkedDocument(from r: SQLRow) -> LinkedDocument {
+        LinkedDocument(id: r.int("id"), taskId: r.intOrNil("task_id"), projectId: r.intOrNil("project_id"),
+                       path: r.string("path"), title: r.string("title"), createdAt: r.date("created_at"),
+                       kind: DocumentKind(rawValue: r.string("kind")) ?? .note,
+                       state: r.stringOrNil("state").flatMap(DocumentState.init(rawValue:)),
+                       round: Int(r.int("round")), updatedAt: r.dateOrNil("updated_at"))
+    }
+
+    public func document(id: Int64) throws -> LinkedDocument? {
+        try db.query("SELECT * FROM documents WHERE id = ?", [.integer(id)]).first.map(linkedDocument(from:))
+    }
+
     @discardableResult
-    public func attachDocument(taskId: Int64?, projectId: Int64?, path: String, title: String?) throws -> Int64 {
+    public func attachDocument(taskId: Int64?, projectId: Int64?, path: String, title: String?,
+                               kind: DocumentKind = .note) throws -> Int64 {
         let expanded = (path as NSString).expandingTildeInPath
         let resolvedTitle = title ?? (expanded as NSString).lastPathComponent
-        try db.execute("INSERT INTO documents (task_id, project_id, path, title, created_at) VALUES (?, ?, ?, ?, ?)",
-                       [taskId.map { .integer($0) } ?? .null,
-                        projectId.map { .integer($0) } ?? .null,
-                        .text(expanded), .text(resolvedTitle), .text(now())])
+        try db.execute("""
+            INSERT INTO documents (task_id, project_id, path, title, created_at, kind, round, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            [taskId.map { .integer($0) } ?? .null,
+             projectId.map { .integer($0) } ?? .null,
+             .text(expanded), .text(resolvedTitle), .text(now()), .text(kind.rawValue), .text(now())])
         if let taskId {
             try logActivity(taskId: taskId, actor: "claude", kind: "note", message: "attached document \(resolvedTitle)")
         }
@@ -332,9 +363,200 @@ public final class Repository {
             LEFT JOIN tasks t ON t.id = d.task_id
             WHERE d.project_id = ? OR t.project_id = ?
             ORDER BY d.id DESC
-            """, [.integer(projectId), .integer(projectId)]).map {
-            LinkedDocument(id: $0.int("id"), taskId: $0.intOrNil("task_id"), projectId: $0.intOrNil("project_id"),
-                           path: $0.string("path"), title: $0.string("title"), createdAt: $0.date("created_at"))
+            """, [.integer(projectId), .integer(projectId)]).map(linkedDocument(from:))
+    }
+
+    // MARK: - Review
+
+    private func setAttentionColumn(taskId: Int64, _ value: String?) throws {
+        try db.execute("UPDATE tasks SET attention = ?, updated_at = ? WHERE id = ?",
+                       [value.map { .text($0) } ?? .null, .text(now()), .integer(taskId)])
+    }
+
+    public func setAttention(taskId: Int64, attention: TaskAttention?, actor: String = "claude") throws {
+        try db.transaction {
+            try setAttentionColumn(taskId: taskId, attention?.rawValue)
+            try logActivity(taskId: taskId, actor: actor, kind: "review",
+                            message: attention.map { "set attention to \($0.displayName)" } ?? "cleared attention")
+        }
+    }
+
+    /// Registers (or re-registers) a markdown file as a proposal awaiting
+    /// the user's verdict. Resubmitting the same task+path bumps the round —
+    /// including after a rejection, which revives the document so the reviewer
+    /// keeps the rejection and its comments in the round history. Submitting a
+    /// *different* path for the task supersedes any settled proposal it replaces.
+    @discardableResult
+    public func submitForReview(taskId: Int64, path: String, title: String? = nil,
+                                actor: String = "claude") throws -> Int64 {
+        let expanded = (path as NSString).expandingTildeInPath
+        let resolvedTitle = title ?? (expanded as NSString).lastPathComponent
+        return try db.transaction {
+            let existing = try db.query(
+                "SELECT id, round, title FROM documents WHERE task_id = ? AND path = ? AND kind = 'proposal'",
+                [.integer(taskId), .text(expanded)]).first
+            let docId: Int64
+            if let existing {
+                docId = existing.int("id")
+                let newRound = existing.int("round") + 1
+                try db.execute(
+                    "UPDATE documents SET state = 'needs_review', round = ?, title = ?, updated_at = ? WHERE id = ?",
+                    [.integer(newRound), title.map { .text($0) } ?? .text(existing.string("title")),
+                     .text(now()), .integer(docId)])
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "resubmitted “\(resolvedTitle)” for review (round \(newRound))")
+            } else {
+                try db.execute("""
+                    INSERT INTO documents (task_id, project_id, path, title, created_at, kind, state, round, updated_at)
+                    VALUES (?, NULL, ?, ?, ?, 'proposal', 'needs_review', 1, ?)
+                    """,
+                    [.integer(taskId), .text(expanded), .text(resolvedTitle), .text(now()), .text(now())])
+                docId = db.lastInsertRowId
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "submitted “\(resolvedTitle)” for review")
+            }
+            try db.execute("""
+                UPDATE documents SET state = 'superseded', updated_at = ?
+                WHERE task_id = ? AND kind = 'proposal' AND path != ?
+                  AND state IN ('approved', 'rejected')
+                """,
+                [.text(now()), .integer(taskId), .text(expanded)])
+            try setAttentionColumn(taskId: taskId, TaskAttention.needsReview.rawValue)
+            return docId
+        }
+    }
+
+    private func setDocumentState(_ state: DocumentState, id: Int64) throws {
+        try db.execute("UPDATE documents SET state = ?, updated_at = ? WHERE id = ?",
+                       [.text(state.rawValue), .text(now()), .integer(id)])
+    }
+
+    // MARK: Annotations
+
+    /// Comments persist immediately (crash-safe) as `open`; the verdict is
+    /// what makes them actionable for Claude.
+    @discardableResult
+    public func addAnnotation(documentId: Int64, quote: String, prefix: String = "",
+                              suffix: String = "", comment: String,
+                              author: String = "user") throws -> Int64 {
+        guard let doc = try document(id: documentId) else {
+            throw RepositoryError.notFound("document \(documentId)")
+        }
+        try db.execute("""
+            INSERT INTO annotations (document_id, round, quote, prefix, suffix, comment, author, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [.integer(documentId), .integer(Int64(doc.round)), .text(quote), .text(prefix),
+             .text(suffix), .text(comment), .text(author), .text(now())])
+        return db.lastInsertRowId
+    }
+
+    public func updateAnnotation(id: Int64, comment: String) throws {
+        try db.execute("UPDATE annotations SET comment = ? WHERE id = ?",
+                       [.text(comment), .integer(id)])
+    }
+
+    public func deleteAnnotation(id: Int64) throws {
+        try db.execute("DELETE FROM annotations WHERE id = ?", [.integer(id)])
+    }
+
+    public func annotations(documentId: Int64) throws -> [Annotation] {
+        try db.query("SELECT * FROM annotations WHERE document_id = ? ORDER BY round, id",
+                     [.integer(documentId)]).map {
+            Annotation(id: $0.int("id"), documentId: $0.int("document_id"),
+                       round: Int($0.int("round")), quote: $0.string("quote"),
+                       prefix: $0.string("prefix"), suffix: $0.string("suffix"),
+                       comment: $0.string("comment"), author: $0.string("author"),
+                       state: AnnotationState(rawValue: $0.string("state")) ?? .open,
+                       reply: $0.stringOrNil("reply"), createdAt: $0.date("created_at"),
+                       resolvedAt: $0.dateOrNil("resolved_at"))
+        }
+    }
+
+    public func resolveAnnotation(id: Int64, reply: String, actor: String = "claude") throws {
+        guard let row = try db.query("SELECT document_id FROM annotations WHERE id = ?",
+                                     [.integer(id)]).first else {
+            throw RepositoryError.notFound("annotation \(id)")
+        }
+        let documentId = row.int("document_id")
+        try db.transaction {
+            try db.execute("UPDATE annotations SET state = 'addressed', reply = ?, resolved_at = ? WHERE id = ?",
+                           [.text(reply), .text(now()), .integer(id)])
+            if let doc = try document(id: documentId), let taskId = doc.taskId {
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "addressed a review comment on “\(doc.title)”")
+            }
+        }
+    }
+
+    // MARK: Verdicts
+
+    public enum ReviewVerdict: String, Sendable {
+        case approve
+        case requestChanges = "request_changes"
+        case reject
+    }
+
+    /// Single transaction per spec: a crash can never leave
+    /// doc-approved-but-task-unflagged states.
+    public func applyVerdict(_ verdict: ReviewVerdict, documentId: Int64, actor: String = "user") throws {
+        guard let doc = try document(id: documentId) else {
+            throw RepositoryError.notFound("document \(documentId)")
+        }
+        guard let taskId = doc.taskId, let task = try getTask(id: taskId)?.task else {
+            throw RepositoryError.notFound("task for document \(documentId)")
+        }
+        try db.transaction {
+            switch verdict {
+            case .approve:
+                try setDocumentState(.approved, id: documentId)
+                try setAttentionColumn(taskId: taskId, TaskAttention.readyToExecute.rawValue)
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "approved “\(doc.title)” — ready to execute")
+            case .requestChanges:
+                try setDocumentState(.changesRequested, id: documentId)
+                try setAttentionColumn(taskId: taskId, TaskAttention.changesRequested.rawValue)
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "requested changes on “\(doc.title)” (round \(doc.round))")
+            case .reject:
+                try setDocumentState(.rejected, id: documentId)
+                try setAttentionColumn(taskId: taskId, nil)
+                if task.status != .todo {
+                    try db.execute("UPDATE tasks SET status = 'todo', updated_at = ? WHERE id = ?",
+                                   [.text(now()), .integer(taskId)])
+                    try logActivity(taskId: taskId, actor: actor, kind: "status",
+                                    message: "moved from \(task.status.displayName) to \(TaskStatus.todo.displayName)")
+                }
+                try logActivity(taskId: taskId, actor: actor, kind: "review",
+                                message: "rejected “\(doc.title)”")
+            }
+        }
+    }
+
+    // MARK: Queue
+
+    public struct ReviewQueueItem: Identifiable, Sendable {
+        public let document: LinkedDocument
+        public let taskId: Int64
+        public let taskTitle: String
+        public let projectId: Int64
+        public let projectName: String
+        public var id: Int64 { document.id }
+    }
+
+    /// Proposals awaiting a verdict, newest activity first.
+    public func reviewQueue() throws -> [ReviewQueueItem] {
+        try db.query("""
+            SELECT d.*, t.title AS task_title, p.id AS p_id, p.name AS project_name
+            FROM documents d
+            JOIN tasks t ON t.id = d.task_id
+            JOIN projects p ON p.id = t.project_id
+            WHERE d.kind = 'proposal' AND d.state = 'needs_review'
+            ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC
+            """).map { r in
+            ReviewQueueItem(document: linkedDocument(from: r), taskId: r.int("task_id"),
+                            taskTitle: r.string("task_title"), projectId: r.int("p_id"),
+                            projectName: r.string("project_name"))
         }
     }
 

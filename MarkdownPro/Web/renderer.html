@@ -2,6 +2,22 @@
 <html>
 <head>
 <meta charset="utf-8">
+<!-- Documents rendered here are untrusted: proposals are machine-generated and
+     marked passes raw HTML straight through to innerHTML. script-src without
+     'unsafe-inline' is what stops injected onerror/onload handlers running; the
+     lack of any remote source closes the exfiltration channel. Keep the page's
+     own scripts in external files or this protection collapses. -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' file: data:;
+  font-src 'self';
+  connect-src 'none';
+  object-src 'none';
+  frame-src 'none';
+  form-action 'none';
+">
 <base id="docbase">
 <link rel="stylesheet" href="hljs-github.css" media="(prefers-color-scheme: light)">
 <link rel="stylesheet" href="hljs-github-dark.css" media="(prefers-color-scheme: dark)">
@@ -70,6 +86,14 @@
     font: 0.85em "SF Mono", ui-monospace, monospace;
     white-space: pre-wrap;
   }
+  ::highlight(review) { background: rgba(255, 196, 0, .38); }
+  #annotate-btn {
+    position: absolute; display: none; z-index: 10;
+    font: 12px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #1f6feb; color: #fff; border: none; border-radius: 6px;
+    padding: 5px 10px; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
   #empty {
     color: rgba(128,128,128,.8);
     text-align: center;
@@ -83,77 +107,8 @@
 </head>
 <body>
 <article id="content"><p id="empty">Select a markdown file</p></article>
-<script>
-(function () {
-  'use strict';
-
-  var darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
-  var lastMarkdown = null;
-  var lastBase = '';
-  var renderSeq = 0;
-
-  function initMermaid() {
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      theme: darkQuery.matches ? 'dark' : 'default'
-    });
-  }
-  initMermaid();
-
-  // Re-theme mermaid diagrams when the system appearance flips.
-  darkQuery.addEventListener('change', function () {
-    initMermaid();
-    if (lastMarkdown !== null) window.renderMarkdown(lastMarkdown, lastBase);
-  });
-
-  window.renderMarkdown = async function (markdown, baseHref) {
-    lastMarkdown = markdown;
-    lastBase = baseHref || '';
-    var seq = ++renderSeq;
-
-    // Relative image/link paths resolve against the source file's folder.
-    var base = document.getElementById('docbase');
-    base.href = lastBase ? (lastBase.endsWith('/') ? lastBase : lastBase + '/') : '';
-
-    var content = document.getElementById('content');
-    content.innerHTML = marked.parse(markdown, { gfm: true });
-
-    // Task lists: nicer checkboxes.
-    content.querySelectorAll('li').forEach(function (li) {
-      if (li.querySelector(':scope > input[type="checkbox"]')) li.classList.add('task-item');
-    });
-
-    // Syntax highlighting for fenced code blocks (skip mermaid).
-    content.querySelectorAll('pre code').forEach(function (block) {
-      if (block.classList.contains('language-mermaid')) return;
-      try { hljs.highlightElement(block); } catch (e) { /* unknown language */ }
-    });
-
-    // Mermaid: swap ```mermaid blocks for rendered diagrams.
-    var mermaidBlocks = content.querySelectorAll('pre code.language-mermaid');
-    var targets = [];
-    mermaidBlocks.forEach(function (block) {
-      var holder = document.createElement('pre');
-      holder.className = 'mermaid';
-      holder.textContent = block.textContent;
-      block.parentElement.replaceWith(holder);
-      targets.push(holder);
-    });
-    for (var i = 0; i < targets.length; i++) {
-      if (seq !== renderSeq) return; // a newer render superseded this one
-      try {
-        var result = await mermaid.render('mmd-' + seq + '-' + i, targets[i].textContent);
-        targets[i].innerHTML = result.svg;
-      } catch (err) {
-        var msg = document.createElement('div');
-        msg.className = 'mermaid-error';
-        msg.textContent = 'mermaid: ' + (err && err.message ? err.message : err);
-        targets[i].replaceChildren(msg);
-      }
-    }
-  };
-})();
-</script>
+<button id="annotate-btn" type="button">Comment (c)</button>
+<script src="renderer-core.js"></script>
+<script src="review-annotations.js"></script>
 </body>
 </html>

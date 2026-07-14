@@ -8,8 +8,10 @@ struct StatsView: View {
 
     private var doneCount: Int { store.tasks.filter { $0.status == .done }.count }
     private var inProgressCount: Int { store.tasks.filter { $0.status == .inProgress }.count }
+    // "Open" = not-yet-started work only, so the tiles don't overlap with
+    // In Progress / Done (Overdue stays an independent overlay lens).
     private var openCount: Int {
-        store.tasks.filter { $0.status == .backlog || $0.status == .todo || $0.status == .inProgress }.count
+        store.tasks.filter { $0.status == .backlog || $0.status == .todo }.count
     }
     private var overdueCount: Int { store.tasks.filter(\.isOverdue).count }
 

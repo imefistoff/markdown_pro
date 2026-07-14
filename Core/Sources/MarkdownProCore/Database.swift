@@ -104,5 +104,50 @@ public enum Database {
                 try db.execute("PRAGMA user_version = 1")
             }
         }
+        if version < 2 {
+            try db.transaction {
+                // Guard each ALTER by column existence so a partially
+                // upgraded DB (crash between processes) migrates cleanly.
+                // Deliberately no CHECK constraints on the new enum-like
+                // columns (kind/state/attention): vocabulary is validated
+                // in Swift (Models.swift enums) so future workflow states
+                // don't require table-rebuild migrations.
+                let docCols = try db.query("PRAGMA table_info(documents)").map { $0.string("name") }
+                if !docCols.contains("kind") {
+                    try db.execute("ALTER TABLE documents ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'")
+                }
+                if !docCols.contains("state") {
+                    try db.execute("ALTER TABLE documents ADD COLUMN state TEXT")
+                }
+                if !docCols.contains("round") {
+                    try db.execute("ALTER TABLE documents ADD COLUMN round INTEGER NOT NULL DEFAULT 1")
+                }
+                if !docCols.contains("updated_at") {
+                    try db.execute("ALTER TABLE documents ADD COLUMN updated_at TEXT")
+                }
+                let taskCols = try db.query("PRAGMA table_info(tasks)").map { $0.string("name") }
+                if !taskCols.contains("attention") {
+                    try db.execute("ALTER TABLE tasks ADD COLUMN attention TEXT")
+                }
+                try db.execute("""
+                    CREATE TABLE IF NOT EXISTS annotations (
+                        id INTEGER PRIMARY KEY,
+                        document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                        round INTEGER NOT NULL,
+                        quote TEXT NOT NULL,
+                        prefix TEXT NOT NULL DEFAULT '',
+                        suffix TEXT NOT NULL DEFAULT '',
+                        comment TEXT NOT NULL,
+                        author TEXT NOT NULL DEFAULT 'user',
+                        state TEXT NOT NULL DEFAULT 'open',
+                        reply TEXT,
+                        created_at TEXT NOT NULL,
+                        resolved_at TEXT
+                    )
+                    """)
+                try db.execute("CREATE INDEX IF NOT EXISTS idx_annotations_document ON annotations(document_id)")
+                try db.execute("PRAGMA user_version = 2")
+            }
+        }
     }
 }

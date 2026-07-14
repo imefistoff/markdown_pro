@@ -53,6 +53,92 @@ public enum TaskPriority: String, CaseIterable, Codable, Identifiable, Sendable 
     }
 }
 
+public enum DocumentKind: String, CaseIterable, Codable, Sendable {
+    case note
+    case wiki
+    case proposal
+}
+
+/// Review lifecycle; only meaningful for `kind == .proposal`.
+public enum DocumentState: String, CaseIterable, Codable, Sendable {
+    case needsReview = "needs_review"
+    case changesRequested = "changes_requested"
+    case approved
+    case rejected
+    case superseded
+
+    public var displayName: String {
+        switch self {
+        case .needsReview: return "Needs review"
+        case .changesRequested: return "Changes requested"
+        case .approved: return "Approved"
+        case .rejected: return "Rejected"
+        case .superseded: return "Superseded"
+        }
+    }
+}
+
+/// Orthogonal workflow flag on tasks; NULL means nothing pending.
+public enum TaskAttention: String, CaseIterable, Codable, Identifiable, Sendable {
+    case needsReview = "needs_review"
+    case changesRequested = "changes_requested"
+    case readyToExecute = "ready_to_execute"
+    case executing
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .needsReview: return "Needs review"
+        case .changesRequested: return "Changes requested"
+        case .readyToExecute: return "Ready to execute"
+        case .executing: return "Executing"
+        }
+    }
+}
+
+public enum AnnotationState: String, CaseIterable, Codable, Sendable {
+    case open
+    case addressed
+}
+
+/// An inline review comment anchored by quote + surrounding context
+/// (W3C TextQuoteSelector), so it survives document edits between rounds.
+public struct Annotation: Identifiable, Hashable, Sendable {
+    public var id: Int64
+    public var documentId: Int64
+    /// Round the comment was made in.
+    public var round: Int
+    public var quote: String
+    public var prefix: String
+    public var suffix: String
+    public var comment: String
+    /// "user" or "claude".
+    public var author: String
+    public var state: AnnotationState
+    /// Claude's response once addressed.
+    public var reply: String?
+    public var createdAt: Date
+    public var resolvedAt: Date?
+
+    public init(id: Int64, documentId: Int64, round: Int, quote: String, prefix: String,
+                suffix: String, comment: String, author: String, state: AnnotationState,
+                reply: String?, createdAt: Date, resolvedAt: Date?) {
+        self.id = id
+        self.documentId = documentId
+        self.round = round
+        self.quote = quote
+        self.prefix = prefix
+        self.suffix = suffix
+        self.comment = comment
+        self.author = author
+        self.state = state
+        self.reply = reply
+        self.createdAt = createdAt
+        self.resolvedAt = resolvedAt
+    }
+}
+
 public struct Project: Identifiable, Hashable, Sendable {
     public var id: Int64
     public var name: String
@@ -137,14 +223,25 @@ public struct LinkedDocument: Identifiable, Hashable, Sendable {
     public var path: String
     public var title: String
     public var createdAt: Date
+    public var kind: DocumentKind
+    /// Review lifecycle; nil for non-proposals.
+    public var state: DocumentState?
+    public var round: Int
+    public var updatedAt: Date?
 
-    public init(id: Int64, taskId: Int64?, projectId: Int64?, path: String, title: String, createdAt: Date) {
+    public init(id: Int64, taskId: Int64?, projectId: Int64?, path: String, title: String,
+                createdAt: Date, kind: DocumentKind = .note, state: DocumentState? = nil,
+                round: Int = 1, updatedAt: Date? = nil) {
         self.id = id
         self.taskId = taskId
         self.projectId = projectId
         self.path = path
         self.title = title
         self.createdAt = createdAt
+        self.kind = kind
+        self.state = state
+        self.round = round
+        self.updatedAt = updatedAt
     }
 }
 
@@ -165,12 +262,13 @@ public struct TaskItem: Identifiable, Hashable, Sendable {
     public var subtaskCount: Int
     public var subtaskDoneCount: Int
     public var documentCount: Int
+    public var attention: TaskAttention?
 
     public init(id: Int64, projectId: Int64, title: String, details: String,
                 status: TaskStatus, priority: TaskPriority, dueDate: Date?,
                 sortOrder: Double, createdAt: Date, updatedAt: Date,
                 labels: [Label] = [], subtaskCount: Int = 0, subtaskDoneCount: Int = 0,
-                documentCount: Int = 0) {
+                documentCount: Int = 0, attention: TaskAttention? = nil) {
         self.id = id
         self.projectId = projectId
         self.title = title
@@ -185,6 +283,7 @@ public struct TaskItem: Identifiable, Hashable, Sendable {
         self.subtaskCount = subtaskCount
         self.subtaskDoneCount = subtaskDoneCount
         self.documentCount = documentCount
+        self.attention = attention
     }
 
     public var isOverdue: Bool {

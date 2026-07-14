@@ -154,6 +154,7 @@ struct BoardColumn: View {
         }
         .padding(8)
         .frame(width: 264)
+        .accessibilityIdentifier("column-\(status.rawValue)")
         .frame(maxHeight: .infinity, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 10)
@@ -195,6 +196,11 @@ struct TaskCardView: View {
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
+            }
+            if let attention = task.attention {
+                AttentionChip(text: attention.displayName,
+                              icon: attention.iconName,
+                              color: attention.color)
             }
             if !task.labels.isEmpty {
                 HStack(spacing: 4) {
@@ -239,6 +245,7 @@ struct TaskCardView: View {
                 .shadow(color: .black.opacity(0.12), radius: 1.5, y: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("taskCard-\(task.title)")
     }
 }
 
