@@ -137,6 +137,46 @@ final class ReviewTests: XCTestCase {
             .contains { $0.message == "moved from In Progress to Todo" })
     }
 
+    // Rejection is feedback, not a tombstone: resubmitting the same path
+    // revives the document as the next round, keeping the rejection history.
+    func testResubmitAfterRejectRevives() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        try repo.applyVerdict(.reject, documentId: docId)
+        let revived = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        XCTAssertEqual(revived, docId, "revival must reuse the rejected document row")
+        let doc = try repo.document(id: docId)!
+        XCTAssertEqual(doc.state, .needsReview)
+        XCTAssertEqual(doc.round, 2)
+        XCTAssertEqual(try repo.getTask(id: taskId)!.task.attention, .needsReview)
+    }
+
+    // A new proposal path for the same task supersedes the settled old one
+    func testNewPathSupersedesSettledProposals() throws {
+        let approved = try repo.submitForReview(taskId: taskId, path: "/tmp/old-approved.md")
+        try repo.applyVerdict(.approve, documentId: approved)
+        let rejected = try repo.submitForReview(taskId: taskId, path: "/tmp/old-rejected.md")
+        try repo.applyVerdict(.reject, documentId: rejected)
+
+        let fresh = try repo.submitForReview(taskId: taskId, path: "/tmp/new.md")
+
+        XCTAssertEqual(try repo.document(id: approved)!.state, .superseded)
+        XCTAssertEqual(try repo.document(id: rejected)!.state, .superseded)
+        XCTAssertEqual(try repo.document(id: fresh)!.state, .needsReview)
+        XCTAssertEqual(try repo.reviewQueue().map(\.id), [fresh])
+    }
+
+    // Superseding only touches settled proposals — a live one is left alone
+    func testNewPathLeavesUnsettledProposalsAlone() throws {
+        let pending = try repo.submitForReview(taskId: taskId, path: "/tmp/pending.md")
+        let changes = try repo.submitForReview(taskId: taskId, path: "/tmp/changes.md")
+        try repo.applyVerdict(.requestChanges, documentId: changes)
+
+        _ = try repo.submitForReview(taskId: taskId, path: "/tmp/new.md")
+
+        XCTAssertEqual(try repo.document(id: pending)!.state, .needsReview)
+        XCTAssertEqual(try repo.document(id: changes)!.state, .changesRequested)
+    }
+
     // Queue: needs_review proposals only, with task/project context
     func testReviewQueueContents() throws {
         let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md", title: "Proposal P")

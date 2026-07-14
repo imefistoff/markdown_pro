@@ -80,11 +80,28 @@ highlight. Anchor staleness is computed at render time, not stored.
 | Approve | `approved` | attention → `ready_to_execute` |
 | Request changes | `changes_requested` | attention → `changes_requested` |
 | Reject | `rejected` | attention → NULL, status → `todo` |
-| Claude resubmits | `needs_review`, round += 1 | attention → `needs_review` |
+| Claude resubmits (same path) | `needs_review`, round += 1 | attention → `needs_review` |
+| Claude submits a new path | new doc `needs_review`; settled siblings → `superseded` | attention → `needs_review` |
 
 Every transition writes an `activity` row with the correct `actor`
 (`"user"` for verdicts from the app, `"claude"` for submissions/resolutions
 via MCP).
+
+### Rejection & revival
+
+Rejection is feedback, not a tombstone. Resubmitting the **same path** for a
+rejected proposal deliberately revives that document as round N+1 — the
+rejection and the comments that caused it stay attached to the one artifact,
+so the reviewer sees *why* it died last time in the "Earlier" panel. Reject
+therefore means "this direction is dead unless you fundamentally rework it,"
+not "this path is frozen."
+
+Submitting a **different path** for the same task retires the proposal it
+replaces: any of that task's proposals in a settled state (`approved` or
+`rejected`) flips to `superseded` inside the same transaction. Live documents
+(`needs_review`, `changes_requested`) are left alone — a task may legitimately
+have more than one proposal in flight. `superseded` docs never appear in the
+review queue.
 
 ### Migration
 

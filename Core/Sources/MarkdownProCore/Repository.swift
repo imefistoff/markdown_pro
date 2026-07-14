@@ -382,7 +382,10 @@ public final class Repository {
     }
 
     /// Registers (or re-registers) a markdown file as a proposal awaiting
-    /// the user's verdict. Resubmitting the same task+path bumps the round.
+    /// the user's verdict. Resubmitting the same task+path bumps the round —
+    /// including after a rejection, which revives the document so the reviewer
+    /// keeps the rejection and its comments in the round history. Submitting a
+    /// *different* path for the task supersedes any settled proposal it replaces.
     @discardableResult
     public func submitForReview(taskId: Int64, path: String, title: String? = nil,
                                 actor: String = "claude") throws -> Int64 {
@@ -412,6 +415,12 @@ public final class Repository {
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
                                 message: "submitted “\(resolvedTitle)” for review")
             }
+            try db.execute("""
+                UPDATE documents SET state = 'superseded', updated_at = ?
+                WHERE task_id = ? AND kind = 'proposal' AND path != ?
+                  AND state IN ('approved', 'rejected')
+                """,
+                [.text(now()), .integer(taskId), .text(expanded)])
             try setAttentionColumn(taskId: taskId, TaskAttention.needsReview.rawValue)
             return docId
         }
