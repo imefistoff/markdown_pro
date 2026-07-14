@@ -54,6 +54,19 @@ Run the built app from the CLI:
   on open, so migrations must be idempotent and ordered.
 - DB location: `~/Library/Application Support/MarkdownPro/markdownpro.sqlite`,
   overridable via `MARKDOWNPRO_DB` (useful for testing against a scratch DB).
+- Export/import lives in `Core`: `Zip.swift` (hand-rolled store-only zip — no
+  dependency, no shelling out to `/usr/bin/zip`), `ExportBundle.swift` (the
+  `manifest.json` types, carrying no row ids), `ProjectExporter` /
+  `ProjectImporter`. Bundles are `.mdproz` files. Import is additive: a name
+  collision becomes `<name> (imported)`, never a merge.
+  `Repository.insertImportedProject` exists because `createTask` stamps its own
+  timestamps and auto-logs a "created" entry — both wrong when restoring real
+  history. Note `db.transaction` is not reentrant, so anything called from
+  inside it must not open its own transaction.
+- Building from a git worktree: `xcodebuild` keys DerivedData by project path,
+  so `~/Library/Developer/Xcode/DerivedData/MarkdownPro-*` matches several
+  directories. Pass `-derivedDataPath` explicitly, or you will launch a stale
+  binary built from the main checkout and debug a ghost.
 
 ## Testing a change end-to-end
 

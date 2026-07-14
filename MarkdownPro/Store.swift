@@ -12,6 +12,21 @@ final class Store: ObservableObject {
     @Published var errorMessage: String?
     /// Set when another view asks the reader to open a file.
     @Published var pendingReaderURL: URL?
+    /// Which modal the app is showing, if any. Set by the File menu and the
+    /// sidebar context menu; consumed by ContentView.
+    @Published var activeSheet: ActiveSheet?
+
+    enum ActiveSheet: Identifiable {
+        case export(preselected: Set<Int64>)
+        case importBundle(ImportPreview, URL)
+
+        var id: String {
+            switch self {
+            case .export: return "export"
+            case .importBundle(_, let url): return "import:\(url.path)"
+            }
+        }
+    }
 
     private(set) var repo: Repository?
     private var lastDataVersion: Int64 = 0
@@ -182,5 +197,50 @@ final class Store: ObservableObject {
     /// Ask the reader tab to show a file.
     func openInReader(path: String) {
         pendingReaderURL = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    }
+
+    // MARK: - Export / import
+
+    /// The export picker lists archived projects too (unchecked by default),
+    /// so `projects` — which hides them — is not enough.
+    func allProjectsIncludingArchived() -> [Project] {
+        guard let repo else { return [] }
+        return (try? repo.listProjects(includeArchived: true)) ?? []
+    }
+
+    func exportProjects(ids: [Int64], to url: URL) {
+        guard let repo else { return }
+        do {
+            let data = try ProjectExporter.export(projectIds: ids, repo: repo)
+            try data.write(to: url)
+        } catch {
+            errorMessage = "Export failed: \(error)"
+        }
+    }
+
+    /// Reads and validates a bundle, then opens the import sheet. Writes nothing.
+    func beginImport(from url: URL) {
+        do {
+            let data = try Data(contentsOf: url)
+            let preview = try ProjectImporter.preview(data)
+            guard !preview.projects.isEmpty else {
+                errorMessage = "That export contains no projects."
+                return
+            }
+            activeSheet = .importBundle(preview, url)
+        } catch {
+            errorMessage = "Could not read that export: \(error)"
+        }
+    }
+
+    func finishImport(url: URL, selecting indices: [Int]) {
+        guard let repo else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            try ProjectImporter.import(data, selecting: indices, repo: repo)
+            refresh()
+        } catch {
+            errorMessage = "Import failed: \(error)"
+        }
     }
 }

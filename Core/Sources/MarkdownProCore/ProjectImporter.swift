@@ -143,9 +143,9 @@ public enum ProjectImporter {
     }
 
     private static func safeDirectoryName(_ name: String) -> String {
+        let allowed: Set<Character> = ["-", "_", " ", "(", ")"]
         let safe = String(name.map { character in
-            character.isLetter || character.isNumber || character == "-" || character == "_" || character == " "
-                ? character : "-"
+            character.isLetter || character.isNumber || allowed.contains(character) ? character : "-"
         })
         let trimmed = safe.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? "Imported" : trimmed

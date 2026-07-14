@@ -67,3 +67,26 @@ Setup: build and register per README, then in a Claude Code session:
 - [ ] Quit and relaunch → data, reader folders, and view mode (board/list) persist.
 - [ ] Create a task while the MCP server is mid-session → no locking errors (WAL + busy timeout).
 - [ ] A markdown file with a broken mermaid block shows an inline mermaid error, not a blank page.
+
+## 9 · Export / import
+
+- [ ] **File ▸ Export Projects…** lists every project with its task count; archived
+      projects appear but start unchecked.
+- [ ] Right-clicking a project in the sidebar offers **Export…**, with that project
+      already checked.
+- [ ] Exporting writes a `.mdproz` file. `unzip -l <file>` lists `manifest.json`
+      and one entry per attached document.
+- [ ] A project with no documents exports and imports cleanly.
+- [ ] **File ▸ Import Projects…** previews the bundle — project names, task counts,
+      and how many documents relink versus restore — before writing anything.
+- [ ] Cancelling the import sheet writes nothing.
+- [ ] Importing restores tasks with their status, priority, due date, labels,
+      subtasks and activity history, with `claude` attribution intact.
+- [ ] Importing a bundle whose project name already exists creates
+      `<name> (imported)` and leaves the existing project untouched.
+- [ ] A document whose original file still exists links to that live file; a
+      document whose original is gone is restored under
+      `~/Library/Application Support/MarkdownPro/Imported/` and still opens in
+      the reader.
+- [ ] Importing a non-export file (a random `.zip`, or a `.txt`) shows a clear
+      error and changes nothing.

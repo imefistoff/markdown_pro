@@ -32,6 +32,16 @@ struct ContentView: View {
         .onChange(of: store.pendingReaderURL) { _, url in
             if url != nil { selection = .docs }
         }
+        .sheet(item: $store.activeSheet) { sheet in
+            switch sheet {
+            case .export(let preselected):
+                ExportSheet(preselected: preselected)
+                    .environmentObject(store)
+            case .importBundle(let preview, let url):
+                ImportSheet(preview: preview, url: url)
+                    .environmentObject(store)
+            }
+        }
         .alert("Something went wrong", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
@@ -74,6 +84,10 @@ struct SidebarView: View {
                     }
                     .tag(SidebarItem.project(project.id))
                     .contextMenu {
+                        Button("Export…") {
+                            store.activeSheet = .export(preselected: [project.id])
+                        }
+                        Divider()
                         Button("Delete Project", role: .destructive) {
                             if case .project(project.id) = selection { selection = .stats }
                             store.deleteProject(id: project.id)
