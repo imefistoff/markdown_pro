@@ -108,8 +108,9 @@ struct ContentView: View {
             case .launch(let request):
                 LaunchConfirmSheet(request: request)
                     .environmentObject(store)
-            case .projectSettings:
-                EmptyView()   // TODO(Task 9): ProjectSettingsSheet wired next
+            case .projectSettings(let id):
+                ProjectSettingsSheet(projectId: id)
+                    .environmentObject(store)
             }
         }
         .alert("Something went wrong", isPresented: Binding(
@@ -176,6 +177,9 @@ struct SidebarView: View {
                     .tag(SidebarItem.project(project.id))
                     .accessibilityIdentifier("projectRow-\(project.name)")
                     .contextMenu {
+                        Button("Project Settings…") {
+                            store.activeSheet = .projectSettings(project.id)
+                        }
                         Button("Export…") {
                             store.activeSheet = .export(preselected: [project.id])
                         }
