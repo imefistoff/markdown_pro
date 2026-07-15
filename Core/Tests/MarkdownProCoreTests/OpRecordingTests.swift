@@ -351,4 +351,57 @@ final class OpRecordingTests: XCTestCase {
         XCTAssertEqual(supersededOp?.stringOrNil("value"), "superseded",
                        "superseding a settled proposal must record a state op so peers converge")
     }
+
+    // MARK: Coverage guard
+
+    /// Runs a mutation, then asserts the op count strictly increased.
+    private func assertRecords(_ tdb: TestDatabase, _ label: String, _ body: () throws -> Void) throws {
+        let before = try tdb.repo.db.query("SELECT COUNT(*) AS c FROM ops").first!.int("c")
+        try body()
+        let after = try tdb.repo.db.query("SELECT COUNT(*) AS c FROM ops").first!.int("c")
+        XCTAssertGreaterThan(after, before, "\(label) recorded no op — silent sync gap")
+    }
+
+    func testEveryMutationRecordsAtLeastOneOp() throws {
+        let tdb = try TestDatabase()
+        let repo = tdb.repo
+        let projectId = try syncedProject(repo)
+        var taskId: Int64 = 0
+
+        try assertRecords(tdb, "createTask") { taskId = try repo.createTask(projectId: projectId, title: "T") }
+        try assertRecords(tdb, "updateTask") { try repo.updateTask(id: taskId, changes: .init(priority: .high)) }
+        try assertRecords(tdb, "moveTask") { try repo.moveTask(id: taskId, to: .inProgress) }
+        try assertRecords(tdb, "renameProject") { try repo.renameProject(id: projectId, name: "Renamed") }
+        try assertRecords(tdb, "setProjectArchived") { try repo.setProjectArchived(id: projectId, archived: true) }
+
+        var subId: Int64 = 0
+        try assertRecords(tdb, "addSubtask") { subId = try repo.addSubtask(taskId: taskId, title: "S") }
+        try assertRecords(tdb, "setSubtaskDone") { try repo.setSubtaskDone(id: subId, done: true) }
+        try assertRecords(tdb, "deleteSubtask") { try repo.deleteSubtask(id: subId) }
+
+        var labelId: Int64 = 0
+        try assertRecords(tdb, "addLabel") { labelId = try repo.addLabel(taskId: taskId, name: "feature") }
+        try assertRecords(tdb, "removeLabel") { try repo.removeLabel(taskId: taskId, labelId: labelId) }
+
+        try assertRecords(tdb, "logActivity") { _ = try repo.logActivity(taskId: taskId, actor: "user", kind: "note", message: "hi") }
+        try assertRecords(tdb, "setAttention") { try repo.setAttention(taskId: taskId, attention: .executing) }
+
+        let path = try tdb.writeFile(named: "a.md", contents: "# A")
+        var docId: Int64 = 0
+        try assertRecords(tdb, "attachDocument") { docId = try repo.attachDocument(taskId: taskId, projectId: nil, path: path, title: "A") }
+        try assertRecords(tdb, "removeDocument") { try repo.removeDocument(id: docId) }
+
+        let specPath = try tdb.writeFile(named: "spec.md", contents: "# Spec")
+        var proposalId: Int64 = 0
+        try assertRecords(tdb, "submitForReview") { proposalId = try repo.submitForReview(taskId: taskId, path: specPath, title: "Spec") }
+        var annId: Int64 = 0
+        try assertRecords(tdb, "addAnnotation") { annId = try repo.addAnnotation(documentId: proposalId, quote: "Spec", comment: "c") }
+        try assertRecords(tdb, "updateAnnotation") { try repo.updateAnnotation(id: annId, comment: "c2") }
+        try assertRecords(tdb, "resolveAnnotation") { try repo.resolveAnnotation(id: annId, reply: "done") }
+        try assertRecords(tdb, "deleteAnnotation") { try repo.addAnnotation(documentId: proposalId, quote: "Spec", comment: "x"); }
+        try assertRecords(tdb, "applyVerdict") { try repo.applyVerdict(.approve, documentId: proposalId) }
+
+        try assertRecords(tdb, "deleteTask") { try repo.deleteTask(id: taskId) }
+        try assertRecords(tdb, "deleteProject") { try repo.deleteProject(id: projectId) }
+    }
 }
