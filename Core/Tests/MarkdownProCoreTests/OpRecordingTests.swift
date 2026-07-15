@@ -30,4 +30,51 @@ final class OpRecordingTests: XCTestCase {
         XCTAssertGreaterThan(reseeded.clock.now(), high,
                              "a fresh clock must not reissue a stamp already in the log")
     }
+
+    // MARK: Project recording
+
+    private func ops(_ repo: Repository, entity: String) throws -> [SQLRow] {
+        try repo.db.query("SELECT * FROM ops WHERE entity = ? ORDER BY id", [.text(entity)])
+    }
+
+    func testUnsyncedProjectEmitsNoOps() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Private work")
+        try tdb.repo.createTask(projectId: projectId, title: "invisible")
+        try tdb.repo.renameProject(id: projectId, name: "Renamed")
+
+        XCTAssertTrue(try tdb.repo.db.query("SELECT id FROM ops").isEmpty,
+                      "an unsynced project must emit zero ops")
+    }
+
+    func testSyncedProjectRecordsInsertAndFieldOps() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Shared")
+        try tdb.repo.setProjectSynced(id: projectId, synced: true)
+        try tdb.repo.renameProject(id: projectId, name: "Shared board")
+
+        let projectOps = try ops(tdb.repo, entity: "project")
+        // insert on toggle-time snapshot + a name update at minimum.
+        XCTAssertTrue(projectOps.contains { $0.string("kind") == "update" && $0.string("field") == "name" })
+        XCTAssertTrue(projectOps.contains { $0.string("value") == "Shared board" })
+    }
+
+    func testFieldStampAdvancesOnUpdate() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Shared")
+        try tdb.repo.setProjectSynced(id: projectId, synced: true)
+        try tdb.repo.renameProject(id: projectId, name: "First")
+        try tdb.repo.renameProject(id: projectId, name: "Second")
+
+        let uuid = try tdb.repo.db.query("SELECT uuid FROM projects WHERE id = ?", [.integer(projectId)])
+            .first!.string("uuid")
+        let stamp = try tdb.repo.db.query(
+            "SELECT hlc FROM field_stamps WHERE entity_uuid = ? AND field = 'name'", [.text(uuid)]).first
+        XCTAssertNotNil(stamp)
+        // The recorded stamp matches the latest name op.
+        let latestNameOp = try tdb.repo.db.query(
+            "SELECT hlc FROM ops WHERE entity_uuid = ? AND field = 'name' ORDER BY id DESC LIMIT 1",
+            [.text(uuid)]).first
+        XCTAssertEqual(stamp?.string("hlc"), latestNameOp?.string("hlc"))
+    }
 }

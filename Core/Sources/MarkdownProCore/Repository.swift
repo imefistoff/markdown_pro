@@ -10,6 +10,17 @@ public final class Repository {
         self.db = db
     }
 
+    private var _sync: SyncState?
+
+    /// Lazily bootstrapped so `init(db:)` stays unchanged for the app, the MCP
+    /// server, and tests. First mutation of a synced project pays the cost.
+    func syncState() throws -> SyncState {
+        if let s = _sync { return s }
+        let s = try SyncState(db: db)
+        _sync = s
+        return s
+    }
+
     private func now() -> String { DateCoding.encode(Date()) }
 
     public enum RepositoryError: Error, CustomStringConvertible {
@@ -43,23 +54,72 @@ public final class Repository {
 
     @discardableResult
     public func createProject(name: String, color: String = "#5E6AD2") throws -> Int64 {
-        try db.execute("INSERT INTO projects (name, color, uuid, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                       [.text(name), .text(color), .text(UUID().uuidString), .text(now()), .text(now())])
-        return db.lastInsertRowId
+        try db.transaction {
+            let uuid = UUID().uuidString
+            try db.execute("""
+                INSERT INTO projects (name, color, created_at, updated_at, uuid) VALUES (?, ?, ?, ?, ?)
+                """,
+                [.text(name), .text(color), .text(now()), .text(now()), .text(uuid)])
+            // A brand-new project defaults to synced = 0, so this records nothing
+            // until setProjectSynced(true) flips it on and snapshots current state.
+            return db.lastInsertRowId
+        }
     }
 
     public func renameProject(id: Int64, name: String) throws {
-        try db.execute("UPDATE projects SET name = ?, updated_at = ? WHERE id = ?",
-                       [.text(name), .text(now()), .integer(id)])
+        try db.transaction {
+            try db.execute("UPDATE projects SET name = ?, updated_at = ? WHERE id = ?",
+                           [.text(name), .text(now()), .integer(id)])
+            if let uuid = try entityUUID(.project, id: id) {
+                try recordUpdate(.project, uuid: uuid, projectId: id, field: "name", value: .text(name))
+            }
+        }
     }
 
     public func setProjectArchived(id: Int64, archived: Bool) throws {
-        try db.execute("UPDATE projects SET archived = ?, updated_at = ? WHERE id = ?",
-                       [.integer(archived ? 1 : 0), .text(now()), .integer(id)])
+        try db.transaction {
+            try db.execute("UPDATE projects SET archived = ?, updated_at = ? WHERE id = ?",
+                           [.integer(archived ? 1 : 0), .text(now()), .integer(id)])
+            if let uuid = try entityUUID(.project, id: id) {
+                try recordUpdate(.project, uuid: uuid, projectId: id,
+                                 field: "archived", value: .integer(archived ? 1 : 0))
+            }
+        }
     }
 
     public func deleteProject(id: Int64) throws {
-        try db.execute("DELETE FROM projects WHERE id = ?", [.integer(id)])
+        try db.transaction {
+            if let uuid = try entityUUID(.project, id: id) {
+                try recordDelete(.project, uuid: uuid, projectId: id)
+            }
+            try db.execute("DELETE FROM projects WHERE id = ?", [.integer(id)])
+        }
+    }
+
+    /// Turns sync on or off for a project. Turning it ON snapshots the project's
+    /// current state into the op log (an insert + a field op per column) so a
+    /// machine adopting it later can rebuild it. Turning it OFF stops emission
+    /// but leaves already-published ops in place.
+    public func setProjectSynced(id: Int64, synced: Bool) throws {
+        try db.transaction {
+            try db.execute("UPDATE projects SET synced = ?, updated_at = ? WHERE id = ?",
+                           [.integer(synced ? 1 : 0), .text(now()), .integer(id)])
+            guard synced, let uuid = try entityUUID(.project, id: id),
+                  let row = try db.query("SELECT * FROM projects WHERE id = ?", [.integer(id)]).first else { return }
+            // projectIsSynced is now true, so this snapshot records.
+            try recordInsert(.project, uuid: uuid, projectId: id, parentUUID: nil, fields: [
+                ("name", .text(row.string("name"))),
+                ("color", .text(row.string("color"))),
+                ("archived", .integer(row.int("archived")))
+            ])
+            try snapshotProjectContents(projectId: id)
+        }
+    }
+
+    /// Emits insert+field ops for everything already inside a project when it is
+    /// first synced. Extended as each entity gains recording.
+    private func snapshotProjectContents(projectId: Int64) throws {
+        // Filled in by later tasks (tasks, subtasks, labels, documents, …).
     }
 
     // MARK: - Tasks
@@ -696,5 +756,84 @@ public final class Repository {
         return rows.compactMap { r in
             TaskStatus(rawValue: r.string("status")).map { StatusCount(status: $0, count: Int(r.int("c"))) }
         }
+    }
+
+    // MARK: - Sync recording
+
+    /// True when the entity's owning project has sync turned on. `nil` projectId
+    /// (a project row itself, resolved by the caller) is handled at call sites.
+    func projectIsSynced(_ projectId: Int64) throws -> Bool {
+        try db.query("SELECT synced FROM projects WHERE id = ?", [.integer(projectId)])
+            .first?.bool("synced") ?? false
+    }
+
+    func entityUUID(_ entity: SyncEntity, id: Int64) throws -> String? {
+        let table: String
+        switch entity {
+        case .project: table = "projects"
+        case .task: table = "tasks"
+        case .subtask: table = "subtasks"
+        case .label: table = "labels"
+        case .document: table = "documents"
+        case .annotation: table = "annotations"
+        case .activity: table = "activity"
+        case .taskLabel: return nil // derived composite; callers build it directly
+        }
+        return try db.query("SELECT uuid FROM \(table) WHERE id = ?", [.integer(id)]).first?.stringOrNil("uuid")
+    }
+
+    /// Appends one op and advances the entity/field stamp. Transaction-free:
+    /// the CALLER already holds an open `db.transaction`.
+    private func appendOp(entity: SyncEntity, uuid: String, kind: OpKind,
+                          field: String?, value: SQLValue, parentUUID: String?) throws {
+        let state = try syncState()
+        let hlc = state.clock.now()
+        let valueText: String?
+        switch value {
+        case .text(let s): valueText = s
+        case .integer(let i): valueText = String(i)
+        case .real(let d): valueText = String(d)
+        case .null: valueText = nil
+        }
+        try db.execute("""
+            INSERT INTO ops (entity, entity_uuid, kind, field, value, parent_uuid, device_id, hlc, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [.text(entity.rawValue), .text(uuid), .text(kind.rawValue),
+             field.map { .text($0) } ?? .null, valueText.map { .text($0) } ?? .null,
+             parentUUID.map { .text($0) } ?? .null,
+             .text(state.deviceId), .text(hlc.description), .text(now())])
+        if let field {
+            try db.execute("""
+                INSERT INTO field_stamps (entity_uuid, field, hlc) VALUES (?, ?, ?)
+                ON CONFLICT(entity_uuid, field) DO UPDATE SET hlc = excluded.hlc
+                """, [.text(uuid), .text(field), .text(hlc.description)])
+        }
+    }
+
+    /// Records an insert plus one update per field. `projectId` is the owning
+    /// project; nothing is recorded unless it is synced.
+    func recordInsert(_ entity: SyncEntity, uuid: String, projectId: Int64?,
+                      parentUUID: String?, fields: [(String, SQLValue)]) throws {
+        guard let projectId, try projectIsSynced(projectId) else { return }
+        try appendOp(entity: entity, uuid: uuid, kind: .insert, field: nil, value: .null, parentUUID: parentUUID)
+        for (field, value) in fields {
+            try appendOp(entity: entity, uuid: uuid, kind: .update, field: field, value: value, parentUUID: nil)
+        }
+    }
+
+    func recordUpdate(_ entity: SyncEntity, uuid: String, projectId: Int64?,
+                      field: String, value: SQLValue) throws {
+        guard let projectId, try projectIsSynced(projectId) else { return }
+        try appendOp(entity: entity, uuid: uuid, kind: .update, field: field, value: value, parentUUID: nil)
+    }
+
+    func recordDelete(_ entity: SyncEntity, uuid: String, projectId: Int64?) throws {
+        guard let projectId, try projectIsSynced(projectId) else { return }
+        try appendOp(entity: entity, uuid: uuid, kind: .delete, field: nil, value: .null, parentUUID: nil)
+        try db.execute("""
+            INSERT INTO tombstones (entity_uuid, entity, hlc) VALUES (?, ?, ?)
+            ON CONFLICT(entity_uuid) DO UPDATE SET hlc = excluded.hlc
+            """, [.text(uuid), .text(entity.rawValue), .text(try syncState().clock.now().description)])
     }
 }
