@@ -20,7 +20,7 @@ untouched.
 
 ## Why these choices
 
-- **Personal Access Token, not OAuth.** A classic PAT the user pastes is the
+- **Personal Access Token, not OAuth.** A token the user pastes is the
   simplest possible auth for a personal two-machine tool: no registered OAuth
   app, no embedded client id, no device-flow polling, no callback server. The
   token lives in the macOS Keychain, per Mac.
