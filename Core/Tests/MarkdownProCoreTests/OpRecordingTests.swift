@@ -77,4 +77,16 @@ final class OpRecordingTests: XCTestCase {
             [.text(uuid)]).first
         XCTAssertEqual(stamp?.string("hlc"), latestNameOp?.string("hlc"))
     }
+
+    func testDeleteOpAndTombstoneShareOneStamp() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Doomed")
+        try tdb.repo.setProjectSynced(id: projectId, synced: true)
+        let uuid = try tdb.repo.db.query("SELECT uuid FROM projects WHERE id = ?", [.integer(projectId)]).first!.string("uuid")
+        try tdb.repo.deleteProject(id: projectId)
+        let opHlc = try tdb.repo.db.query("SELECT hlc FROM ops WHERE kind = 'delete' AND entity_uuid = ?", [.text(uuid)]).first?.stringOrNil("hlc")
+        let tsHlc = try tdb.repo.db.query("SELECT hlc FROM tombstones WHERE entity_uuid = ?", [.text(uuid)]).first?.stringOrNil("hlc")
+        XCTAssertNotNil(opHlc)
+        XCTAssertEqual(opHlc, tsHlc, "delete op and its tombstone must share exactly one HLC")
+    }
 }

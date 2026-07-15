@@ -785,9 +785,10 @@ public final class Repository {
     /// Appends one op and advances the entity/field stamp. Transaction-free:
     /// the CALLER already holds an open `db.transaction`.
     private func appendOp(entity: SyncEntity, uuid: String, kind: OpKind,
-                          field: String?, value: SQLValue, parentUUID: String?) throws {
+                          field: String?, value: SQLValue, parentUUID: String?,
+                          stamp: HLC? = nil) throws {
         let state = try syncState()
-        let hlc = state.clock.now()
+        let hlc = stamp ?? state.clock.now()
         let valueText: String?
         switch value {
         case .text(let s): valueText = s
@@ -830,10 +831,11 @@ public final class Repository {
 
     func recordDelete(_ entity: SyncEntity, uuid: String, projectId: Int64?) throws {
         guard let projectId, try projectIsSynced(projectId) else { return }
-        try appendOp(entity: entity, uuid: uuid, kind: .delete, field: nil, value: .null, parentUUID: nil)
+        let hlc = try syncState().clock.now()
+        try appendOp(entity: entity, uuid: uuid, kind: .delete, field: nil, value: .null, parentUUID: nil, stamp: hlc)
         try db.execute("""
             INSERT INTO tombstones (entity_uuid, entity, hlc) VALUES (?, ?, ?)
             ON CONFLICT(entity_uuid) DO UPDATE SET hlc = excluded.hlc
-            """, [.text(uuid), .text(entity.rawValue), .text(try syncState().clock.now().description)])
+            """, [.text(uuid), .text(entity.rawValue), .text(hlc.description)])
     }
 }
