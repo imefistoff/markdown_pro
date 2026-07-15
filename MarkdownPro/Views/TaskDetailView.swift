@@ -83,7 +83,16 @@ struct TaskDetailView: View {
                             AttentionChip(text: attention.displayName,
                                           icon: attention.iconName,
                                           color: attention.color)
+                            if attention == .executing {
+                                Button("Clear") {
+                                    store.clearAttention(taskId: taskId)
+                                    reload()
+                                }
+                                .controlSize(.small)
+                                .help("Clear the Executing flag if the session was stopped")
+                            }
                         }
+                        LaunchButton(task: detail.task)
                         Spacer()
                     }
 

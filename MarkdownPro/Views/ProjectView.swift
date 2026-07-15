@@ -183,6 +183,7 @@ struct BoardColumn: View {
 }
 
 struct TaskCardView: View {
+    @EnvironmentObject private var store: Store
     let task: TaskItem
 
     var body: some View {
@@ -202,6 +203,7 @@ struct TaskCardView: View {
                               icon: attention.iconName,
                               color: attention.color)
             }
+            LaunchButton(task: task)
             if !task.labels.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(task.labels.prefix(3)) { label in
