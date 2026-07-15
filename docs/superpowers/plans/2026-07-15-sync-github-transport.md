@@ -71,11 +71,13 @@ final class FakeGitHubServer {
     static var files: [String: Data] = [:]
     static var repoExists = true
     static var lastAuthHeader: String?
+    static var forceStatus: Int?
 
     static func reset() {
         files = [:]
         repoExists = true
         lastAuthHeader = nil
+        forceStatus = nil
     }
 
     /// A URLSession whose only protocol is the fake.
@@ -95,9 +97,9 @@ final class FakeGitHubURLProtocol: URLProtocol {
 
     override func startLoading() {
         FakeGitHubServer.lastAuthHeader = request.value(forHTTPHeaderField: "Authorization")
+        if let code = FakeGitHubServer.forceStatus { return finish(code, Data()) }
         guard let url = request.url else { return finish(400, Data()) }
         let path = url.path                       // e.g. /repos/o/r/contents/ops/devA/1.jsonl
-        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let method = request.httpMethod ?? "GET"
 
         // GET /repos/<o>/<r>  → repo existence
@@ -201,6 +203,18 @@ final class GitHubAPITests: XCTestCase {
         XCTAssertTrue(try api().getRepoExists())
         FakeGitHubServer.repoExists = false
         XCTAssertFalse(try api().getRepoExists())
+    }
+
+    func testUnauthorizedStatusThrows() {
+        for code in [401, 403] {
+            FakeGitHubServer.forceStatus = code
+            XCTAssertThrowsError(try api().getRepoExists()) { err in
+                guard case GitHubError.unauthorized = err else {
+                    return XCTFail("expected .unauthorized for HTTP \(code), got \(err)")
+                }
+            }
+            FakeGitHubServer.forceStatus = nil
+        }
     }
 }
 ```
