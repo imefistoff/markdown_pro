@@ -105,6 +105,8 @@ struct ContentView: View {
             case .importBundle(let preview, let url):
                 ImportSheet(preview: preview, url: url)
                     .environmentObject(store)
+            case .projectSettings, .launch:
+                EmptyView()   // TODO(Task 8/9): real sheets wired next
             }
         }
         .alert("Something went wrong", isPresented: Binding(

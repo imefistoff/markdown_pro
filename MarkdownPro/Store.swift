@@ -18,6 +18,8 @@ final class Store: ObservableObject {
     @Published private(set) var reviewQueue: [Repository.ReviewQueueItem] = []
     /// One-shot in-app notification ("Proposal ready: …").
     @Published var toast: String?
+    /// Project ids that have a repo path set — gates the Launch button's enabled state.
+    @Published private(set) var launchableProjects: Set<Int64> = []
 
     /// Review-doc ids seen by the last refresh; nil until the first load
     /// so launch never toasts.
@@ -26,16 +28,27 @@ final class Store: ObservableObject {
     enum ActiveSheet: Identifiable {
         case export(preselected: Set<Int64>)
         case importBundle(ImportPreview, URL)
+        case projectSettings(Int64)
+        case launch(LaunchRequest)
 
         var id: String {
             switch self {
             case .export: return "export"
             case .importBundle(_, let url): return "import:\(url.path)"
+            case .projectSettings(let id): return "settings:\(id)"
+            case .launch(let req): return "launch:\(req.script.taskId)"
             }
         }
     }
 
+    struct LaunchRequest {
+        let script: LaunchScript
+        let taskTitle: String
+        let warpAvailable: Bool
+    }
+
     private(set) var repo: Repository?
+    private let launcher: TerminalLauncher = WarpLauncher()
     private var lastDataVersion: Int64 = 0
     private var timer: Timer?
 
@@ -101,6 +114,7 @@ final class Store: ObservableObject {
             }
             knownReviewDocIds = Set(queue.map(\.id))
             reviewQueue = queue
+            launchableProjects = (try? repo.projectIdsWithRepoPath()) ?? []
         } catch {
             errorMessage = "\(error)"
         }
@@ -223,6 +237,51 @@ final class Store: ObservableObject {
 
     func applyVerdict(_ verdict: Repository.ReviewVerdict, documentId: Int64) {
         perform { try $0.applyVerdict(verdict, documentId: documentId, actor: "user") }
+    }
+
+    // MARK: - Launch
+
+    func projectLaunchSettings(_ projectId: Int64) -> ProjectLaunchSettings? {
+        guard let repo else { return nil }
+        return try? repo.projectLaunchSettings(projectId)
+    }
+
+    func saveProjectLaunchSettings(_ settings: ProjectLaunchSettings) {
+        perform { try $0.setProjectLaunchSettings(settings) }
+    }
+
+    /// Compose the script for a ready-to-execute task and present the confirm sheet.
+    func beginLaunch(task: TaskItem) {
+        guard let repo else { return }
+        do {
+            let settings = try repo.projectLaunchSettings(task.projectId)
+            guard let document = try repo.latestApprovedDocument(taskId: task.id) else {
+                errorMessage = "No approved document to launch for this task."
+                return
+            }
+            let script = try LaunchScriptBuilder.script(task: task, document: document, settings: settings)
+            activeSheet = .launch(LaunchRequest(script: script, taskTitle: task.title,
+                                                warpAvailable: WarpLauncher.isAvailable))
+        } catch {
+            errorMessage = "\(error)"
+        }
+    }
+
+    /// Run the composed script and record the launch (attention → executing).
+    func confirmLaunch(_ request: LaunchRequest) {
+        guard let repo else { return }
+        do {
+            try launcher.launch(request.script)
+            try repo.recordLaunch(taskId: request.script.taskId, kind: request.script.kind)
+            activeSheet = nil
+            refresh()
+        } catch {
+            errorMessage = "Launch failed: \(error)"
+        }
+    }
+
+    func clearAttention(taskId: Int64) {
+        perform { try $0.setAttention(taskId: taskId, attention: nil, actor: "user") }
     }
 
     // MARK: - Stats
