@@ -86,4 +86,12 @@ final class GitHubTransportTests: XCTestCase {
         XCTAssertEqual(tasks.map(\.title), ["Ship it"])
         XCTAssertEqual(tasks.first?.priority, .high)
     }
+
+    func testPublishThrowsRatherThanWipingMalformedDevices() throws {
+        FakeGitHubServer.files["devices.json"] = Data("not valid json".utf8)
+        XCTAssertThrowsError(try transport("devA").publish(
+            ops: [], blobs: [], selfDevice: SyncDevice(deviceId: "devA", name: "A")))
+        // The malformed roster file was NOT overwritten with a self-only roster.
+        XCTAssertEqual(FakeGitHubServer.files["devices.json"], Data("not valid json".utf8))
+    }
 }

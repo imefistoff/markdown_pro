@@ -33,7 +33,12 @@ public final class GitHubTransport: SyncTransport {
         var roster: [String: String] = [:]
         var sha: String?
         if let existing = try api.getContent("devices.json") {
-            roster = (try? JSONSerialization.jsonObject(with: existing.data) as? [String: String]) ?? [:]
+            // A malformed roster must never be silently replaced with a self-only
+            // one: throw so the engine treats this sync as a no-op and retries.
+            guard let map = try? JSONSerialization.jsonObject(with: existing.data) as? [String: String] else {
+                throw GitHubError.malformed("devices.json")
+            }
+            roster = map
             sha = existing.sha
         }
         roster[selfDevice.deviceId] = selfDevice.name
