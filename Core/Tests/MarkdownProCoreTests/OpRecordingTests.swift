@@ -89,4 +89,62 @@ final class OpRecordingTests: XCTestCase {
         XCTAssertNotNil(opHlc)
         XCTAssertEqual(opHlc, tsHlc, "delete op and its tombstone must share exactly one HLC")
     }
+
+    // MARK: Task recording
+
+    private func syncedProject(_ repo: Repository, name: String = "Shared") throws -> Int64 {
+        let id = try repo.createProject(name: name)
+        try repo.setProjectSynced(id: id, synced: true)
+        return id
+    }
+
+    func testCreateTaskRecordsInsertWithProjectParent() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "Do the thing", priority: .high)
+
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        let projectUUID = try tdb.repo.entityUUID(.project, id: projectId)!
+        let insert = try tdb.repo.db.query(
+            "SELECT * FROM ops WHERE entity = 'task' AND kind = 'insert' AND entity_uuid = ?",
+            [.text(taskUUID)]).first
+        XCTAssertEqual(insert?.stringOrNil("parent_uuid"), projectUUID)
+        // Field ops carry the values.
+        let fields = try tdb.repo.db.query(
+            "SELECT field, value FROM ops WHERE entity = 'task' AND kind = 'update' AND entity_uuid = ?",
+            [.text(taskUUID)])
+        XCTAssertTrue(fields.contains { $0.string("field") == "title" && $0.string("value") == "Do the thing" })
+        XCTAssertTrue(fields.contains { $0.string("field") == "priority" && $0.string("value") == "high" })
+    }
+
+    func testUpdateTaskRecordsOnlyChangedFields() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "Original")
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        // Clear the create-time ops from view by remembering the current max id.
+        let before = try tdb.repo.db.query("SELECT COALESCE(MAX(id), 0) AS m FROM ops").first!.int("m")
+
+        try tdb.repo.updateTask(id: taskId, changes: .init(status: .inProgress))
+
+        let after = try tdb.repo.db.query(
+            "SELECT field FROM ops WHERE id > ? AND entity_uuid = ?", [.integer(before), .text(taskUUID)])
+        XCTAssertEqual(after.compactMap { $0.stringOrNil("field") }, ["status"])
+        XCTAssertEqual(try tdb.repo.db.query(
+            "SELECT value FROM ops WHERE id > ? AND field = 'status'", [.integer(before)]).first?.string("value"),
+            "in_progress")
+    }
+
+    func testDeleteTaskTombstones() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "temp")
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        try tdb.repo.deleteTask(id: taskId)
+
+        XCTAssertFalse(try tdb.repo.db.query(
+            "SELECT 1 FROM ops WHERE kind = 'delete' AND entity_uuid = ?", [.text(taskUUID)]).isEmpty)
+        XCTAssertFalse(try tdb.repo.db.query(
+            "SELECT 1 FROM tombstones WHERE entity_uuid = ?", [.text(taskUUID)]).isEmpty)
+    }
 }

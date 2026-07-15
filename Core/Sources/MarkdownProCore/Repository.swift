@@ -119,7 +119,17 @@ public final class Repository {
     /// Emits insert+field ops for everything already inside a project when it is
     /// first synced. Extended as each entity gains recording.
     private func snapshotProjectContents(projectId: Int64) throws {
-        // Filled in by later tasks (tasks, subtasks, labels, documents, …).
+        guard let projectUUID = try entityUUID(.project, id: projectId) else { return }
+        let tasks = try db.query("SELECT * FROM tasks WHERE project_id = ?", [.integer(projectId)])
+        for t in tasks {
+            let uuid = t.string("uuid")
+            try recordInsert(.task, uuid: uuid, projectId: projectId, parentUUID: projectUUID, fields: [
+                ("title", .text(t.string("title"))), ("details", .text(t.string("details"))),
+                ("status", .text(t.string("status"))), ("priority", .text(t.string("priority"))),
+                ("due_date", t.stringOrNil("due_date").map { .text($0) } ?? .null),
+                ("sort_order", .real(t.double("sort_order")))
+            ])
+        }
     }
 
     // MARK: - Tasks
@@ -218,14 +228,23 @@ public final class Repository {
         try db.transaction {
             let maxOrder = try db.query("SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project_id = ?",
                                         [.integer(projectId)]).first?.double("m") ?? 0
+            let uuid = UUID().uuidString
             try db.execute("""
                 INSERT INTO tasks (project_id, title, details, status, priority, due_date, uuid, sort_order, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [.integer(projectId), .text(title), .text(details), .text(status.rawValue),
                  .text(priority.rawValue), dueDate.map { .text($0) } ?? .null,
-                 .text(UUID().uuidString), .real(maxOrder + 1), .text(now()), .text(now())])
+                 .text(uuid), .real(maxOrder + 1), .text(now()), .text(now())])
             let taskId = db.lastInsertRowId
+            if let projectUUID = try entityUUID(.project, id: projectId) {
+                try recordInsert(.task, uuid: uuid, projectId: projectId, parentUUID: projectUUID, fields: [
+                    ("title", .text(title)), ("details", .text(details)),
+                    ("status", .text(status.rawValue)), ("priority", .text(priority.rawValue)),
+                    ("due_date", dueDate.map { .text($0) } ?? .null),
+                    ("sort_order", .real(maxOrder + 1))
+                ])
+            }
             for name in labels {
                 try addLabel(taskId: taskId, name: name)
             }
@@ -264,36 +283,43 @@ public final class Repository {
         var sets: [String] = []
         var bindings: [SQLValue] = []
         var logs: [(kind: String, message: String)] = []
+        var syncFields: [(String, SQLValue)] = []
 
         if let title = changes.title, title != current.title {
             sets.append("title = ?")
             bindings.append(.text(title))
             logs.append(("field", "renamed to “\(title)”"))
+            syncFields.append(("title", .text(title)))
         }
         if let details = changes.details, details != current.details {
             sets.append("details = ?")
             bindings.append(.text(details))
             logs.append(("field", "updated the description"))
+            syncFields.append(("details", .text(details)))
         }
         if let status = changes.status, status != current.status {
             sets.append("status = ?")
             bindings.append(.text(status.rawValue))
             logs.append(("status", "moved from \(current.status.displayName) to \(status.displayName)"))
+            syncFields.append(("status", .text(status.rawValue)))
         }
         if let priority = changes.priority, priority != current.priority {
             sets.append("priority = ?")
             bindings.append(.text(priority.rawValue))
             logs.append(("field", "set priority to \(priority.displayName)"))
+            syncFields.append(("priority", .text(priority.rawValue)))
         }
         if let dueDate = changes.dueDate {
             sets.append("due_date = ?")
             bindings.append(dueDate.map { .text($0) } ?? .null)
             logs.append(("field", dueDate.map { "set due date to \($0)" } ?? "cleared the due date"))
+            syncFields.append(("due_date", dueDate.map { .text($0) } ?? .null))
         }
         if let projectId = changes.projectId, projectId != current.projectId {
             sets.append("project_id = ?")
             bindings.append(.integer(projectId))
             logs.append(("field", "moved to another project"))
+            syncFields.append(("project_id", .integer(projectId)))
         }
         guard !sets.isEmpty else { return }
         sets.append("updated_at = ?")
@@ -304,6 +330,13 @@ public final class Repository {
             for log in logs {
                 try logActivity(taskId: id, actor: actor, kind: log.kind, message: log.message)
             }
+            if let uuid = try entityUUID(.task, id: id) {
+                // Record against the CURRENT project (a move records under the new one).
+                let owningProject = changes.projectId ?? current.projectId
+                for (field, value) in syncFields {
+                    try recordUpdate(.task, uuid: uuid, projectId: owningProject, field: field, value: value)
+                }
+            }
         }
     }
 
@@ -313,7 +346,14 @@ public final class Repository {
     }
 
     public func deleteTask(id: Int64) throws {
-        try db.execute("DELETE FROM tasks WHERE id = ?", [.integer(id)])
+        try db.transaction {
+            if let uuid = try entityUUID(.task, id: id),
+               let projectId = try db.query("SELECT project_id FROM tasks WHERE id = ?", [.integer(id)])
+                .first?.int("project_id") {
+                try recordDelete(.task, uuid: uuid, projectId: projectId)
+            }
+            try db.execute("DELETE FROM tasks WHERE id = ?", [.integer(id)])
+        }
     }
 
     // MARK: - Subtasks
