@@ -1,59 +1,53 @@
 import SwiftUI
-import AppKit
 import MarkdownProCore
 
-/// Surfaced as the app's Settings scene (⌘,): pick the folder both Macs point
-/// at (Dropbox/Syncthing/etc.) and adopt projects another machine has synced
-/// there. Per-project opt-in lives on `ProjectView`.
 struct SyncSettingsView: View {
     @EnvironmentObject var store: Store
+    @State private var owner = ""
+    @State private var repo = "markdownpro-sync"
+    @State private var token = ""
+    @State private var status: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Sync").font(.title2.bold())
-
-            HStack {
-                Text(store.syncFolderPath ?? "No sync folder chosen")
-                    .foregroundStyle(store.syncFolderPath == nil ? .secondary : .primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("Choose Folder…") { chooseFolder() }
+            if let target = store.syncTargetLabel {
+                HStack {
+                    Text("Connected — \(target)").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Disconnect") { store.disconnectSync() }
+                }
+            } else {
+                TextField("owner", text: $owner)
+                TextField("repo", text: $repo)
+                SecureField("fine-grained token (Contents: read/write)", text: $token)
+                HStack {
+                    Button("Verify & Connect") { connect() }
+                        .disabled(owner.isEmpty || repo.isEmpty || token.isEmpty)
+                    if let status { Text(status).font(.caption).foregroundStyle(.red) }
+                }
+                Text("Create an empty private repo on GitHub first, then a fine-grained token scoped to just that repo (Contents: read/write).")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-
             Divider()
-
             Text("Available to adopt").font(.headline)
             if store.adoptable.isEmpty {
-                Text(store.syncFolderPath == nil
-                     ? "Choose a sync folder to see projects shared by other Macs."
-                     : "No unadopted projects found in the sync folder.")
-                    .font(.callout)
+                Text(store.syncTargetLabel == nil ? "Connect a GitHub repo first." : "No unadopted projects found.")
                     .foregroundStyle(.secondary)
             } else {
                 List(store.adoptable) { project in
-                    HStack {
-                        Text(project.name)
-                        Spacer()
-                        Button("Adopt") { store.adopt(project) }
-                    }
+                    HStack { Text(project.name); Spacer(); Button("Adopt") { store.adopt(project) } }
                 }
-                .listStyle(.inset)
             }
             Spacer()
         }
-        .padding(20)
-        .frame(width: 420, height: 360)
+        .padding(20).frame(width: 460, height: 400).textFieldStyle(.roundedBorder)
     }
 
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        if panel.runModal() == .OK, let url = panel.url {
-            store.setSyncFolder(url)
-        }
+    private func connect() {
+        status = store.connectGitHub(owner: owner.trimmingCharacters(in: .whitespaces),
+                                     repo: repo.trimmingCharacters(in: .whitespaces),
+                                     token: token.trimmingCharacters(in: .whitespaces))
+        if status == nil { token = "" }
     }
 }

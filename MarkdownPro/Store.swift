@@ -52,14 +52,11 @@ final class Store: ObservableObject {
     private var lastDataVersion: Int64 = 0
     private var timer: Timer?
 
-    /// The folder both Macs point at (Dropbox/Syncthing/etc.). Persisted.
-    @Published private(set) var syncFolderPath: String?
     @Published private(set) var adoptable: [SyncEngine.AdoptableProject] = []
     private var syncEngine: SyncEngine?
     private var syncDebounce: Timer?
     private var isSyncing = false
-    private let syncFolderKey = "MarkdownProSyncFolder"
-    private let syncTransportKey = "MarkdownProSyncTransport"   // "folder" | "github"
+    private let syncTransportKey = "MarkdownProSyncTransport"   // "github"
     private let ghOwnerKey = "MarkdownProGitHubOwner"
     private let ghRepoKey = "MarkdownProGitHubRepo"
     @Published private(set) var syncTargetLabel: String?
@@ -158,44 +155,19 @@ final class Store: ObservableObject {
     // MARK: - Sync
 
     private func loadSyncEngine() {
-        guard let repo else { return }
-        // Backward compatibility: a user who configured folder sync before this
-        // change has syncFolderKey set but no syncTransportKey — treat as folder.
-        let type = UserDefaults.standard.string(forKey: syncTransportKey)
-            ?? (UserDefaults.standard.string(forKey: syncFolderKey).map { _ in "folder" })
+        guard let repo,
+              UserDefaults.standard.string(forKey: syncTransportKey) == "github",
+              let owner = UserDefaults.standard.string(forKey: ghOwnerKey),
+              let name = UserDefaults.standard.string(forKey: ghRepoKey),
+              let token = KeychainTokenStore.load() else { syncEngine = nil; return }
         do {
             let deviceId = try repo.syncState().deviceId
-            switch type {
-            case "folder":
-                guard let path = UserDefaults.standard.string(forKey: syncFolderKey), !path.isEmpty else { return }
-                syncFolderPath = path
-                syncTargetLabel = "Folder: \((path as NSString).lastPathComponent)"
-                syncEngine = SyncEngine(repo: repo, transport: FolderTransport(root: URL(fileURLWithPath: path), deviceId: deviceId))
-            case "github":
-                syncFolderPath = nil
-                guard let owner = UserDefaults.standard.string(forKey: ghOwnerKey),
-                      let name = UserDefaults.standard.string(forKey: ghRepoKey),
-                      let token = KeychainTokenStore.load() else { return }
-                syncTargetLabel = "GitHub: \(owner)/\(name)"
-                syncEngine = SyncEngine(repo: repo, transport:
-                    GitHubTransport(owner: owner, repo: name, token: token, deviceId: deviceId))
-            default:
-                syncFolderPath = nil
-                syncEngine = nil
-            }
+            syncTargetLabel = "GitHub: \(owner)/\(name)"
+            syncEngine = SyncEngine(repo: repo, transport:
+                GitHubTransport(owner: owner, repo: name, token: token, deviceId: deviceId))
         } catch {
             errorMessage = "Could not start sync: \(error)"
         }
-    }
-
-    func setSyncFolder(_ url: URL) {
-        let switching = UserDefaults.standard.string(forKey: syncTransportKey) != "folder"
-            || UserDefaults.standard.string(forKey: syncFolderKey) != url.path
-        UserDefaults.standard.set("folder", forKey: syncTransportKey)
-        UserDefaults.standard.set(url.path, forKey: syncFolderKey)
-        if switching { perform { try $0.resetSyncCursors() } }
-        loadSyncEngine()
-        syncNow()
     }
 
     /// Verifies access, stores the token in the Keychain, switches the target to
@@ -226,12 +198,10 @@ final class Store: ObservableObject {
     func disconnectSync() {
         KeychainTokenStore.delete()
         UserDefaults.standard.removeObject(forKey: syncTransportKey)
-        UserDefaults.standard.removeObject(forKey: syncFolderKey)
         UserDefaults.standard.removeObject(forKey: ghOwnerKey)
         UserDefaults.standard.removeObject(forKey: ghRepoKey)
         syncEngine = nil
         syncTargetLabel = nil
-        syncFolderPath = nil
         adoptable = []
     }
 
