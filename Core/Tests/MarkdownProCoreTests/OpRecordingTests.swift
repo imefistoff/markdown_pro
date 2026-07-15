@@ -404,4 +404,20 @@ final class OpRecordingTests: XCTestCase {
         try assertRecords(tdb, "deleteTask") { try repo.deleteTask(id: taskId) }
         try assertRecords(tdb, "deleteProject") { try repo.deleteProject(id: projectId) }
     }
+
+    // MARK: MCP parity
+
+    /// The MCP server constructs `Repository(db:)` directly and calls the same
+    /// methods with `actor: "claude"`. It must not need any sync-specific code
+    /// of its own: a claude-actor mutation should record ops exactly like a
+    /// user-actor one, so the op simply waits to be published on the next
+    /// app-driven sync.
+    func testClaudeActorMutationRecordsOpsToo() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let before = try tdb.repo.db.query("SELECT COUNT(*) AS c FROM ops").first!.int("c")
+        _ = try tdb.repo.createTask(projectId: projectId, title: "from claude", actor: "claude")
+        let after = try tdb.repo.db.query("SELECT COUNT(*) AS c FROM ops").first!.int("c")
+        XCTAssertGreaterThan(after, before, "MCP-side writes must record ops through Repository")
+    }
 }

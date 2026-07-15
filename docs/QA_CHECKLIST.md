@@ -128,3 +128,28 @@ Task 4 of the review-center plan for the JSON-RPC lines).
 - [ ] A task carrying review state (proposal doc, annotations, attention chip)
       exports and imports without error — review state is **not** carried by the
       bundle, so the imported copy comes back clean.
+
+## § Sync (Spec A)
+
+Manual two-machine pass: two app instances (Task 15 setup) pointed at one
+shared sync folder, chosen in-app via Settings ▸ Sync (`Store.setSyncFolder`).
+The convergence logic itself is covered automatically by
+`SyncEngineTests` / `SyncReplayerTests` / `SyncModelsTests` in
+`Core/Tests/MarkdownProCoreTests`; the items below are the live GUI walk
+that exercises the same paths end to end.
+
+- [ ] Two Macs, one folder: toggle a project synced on A → it appears under "Available to adopt" on B.
+- [ ] Adopt on B → tasks, subtasks, labels, activity and documents all materialize.
+- [ ] Edit different fields of one task on each Mac without syncing between → after sync, both edits survive.
+- [ ] Delete a task on A while editing it on B → after sync, it stays deleted on both.
+- [ ] An unsynced ("private") project never writes anything into the sync folder (inspect `ops/*.jsonl`).
+- [ ] Attach a document on A → the file's content appears on B (managed copy under Application Support/MarkdownPro/Synced).
+- [ ] Edit the document on A → the change reaches B on the next sync.
+- [ ] Claude (MCP) creates a task in a synced project while the app is closed → the task publishes when the app next launches.
+- [ ] Turn the sync folder off/unreachable → the app keeps working; ops accumulate and go out on the next successful sync.
+- [ ] A change made on either Mac converges to the other after sync (bidirectional, not just A → B).
+- [ ] Re-running sync with no new local changes (idempotent re-sync) leaves the DB and `ops/*.jsonl` unchanged.
+- [ ] Set one Mac's clock behind the other, then sync — HLC causality still resolves correctly (no reordering of updates).
+- [ ] The same label name created independently on both Macs converges to a single label row after sync.
+- [ ] Detaching then re-attaching a label on either Mac converges so the label ends up attached.
+- [ ] A document whose original file still exists on the peer relinks to it; one whose original is missing restores a managed copy.
