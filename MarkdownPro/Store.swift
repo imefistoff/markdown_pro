@@ -172,6 +172,7 @@ final class Store: ObservableObject {
                 syncTargetLabel = "Folder: \((path as NSString).lastPathComponent)"
                 syncEngine = SyncEngine(repo: repo, transport: FolderTransport(root: URL(fileURLWithPath: path), deviceId: deviceId))
             case "github":
+                syncFolderPath = nil
                 guard let owner = UserDefaults.standard.string(forKey: ghOwnerKey),
                       let name = UserDefaults.standard.string(forKey: ghRepoKey),
                       let token = KeychainTokenStore.load() else { return }
@@ -179,6 +180,7 @@ final class Store: ObservableObject {
                 syncEngine = SyncEngine(repo: repo, transport:
                     GitHubTransport(owner: owner, repo: name, token: token, deviceId: deviceId))
             default:
+                syncFolderPath = nil
                 syncEngine = nil
             }
         } catch {
@@ -208,11 +210,14 @@ final class Store: ObservableObject {
         } catch {
             return "Could not verify: \(error)"
         }
+        let switching = UserDefaults.standard.string(forKey: syncTransportKey) != "github"
+            || UserDefaults.standard.string(forKey: ghOwnerKey) != owner
+            || UserDefaults.standard.string(forKey: ghRepoKey) != repo
         KeychainTokenStore.save(token)
         UserDefaults.standard.set("github", forKey: syncTransportKey)
         UserDefaults.standard.set(owner, forKey: ghOwnerKey)
         UserDefaults.standard.set(repo, forKey: ghRepoKey)
-        perform { try $0.resetSyncCursors() }
+        if switching { perform { try $0.resetSyncCursors() } }
         loadSyncEngine()
         syncNow()
         return nil
@@ -221,6 +226,9 @@ final class Store: ObservableObject {
     func disconnectSync() {
         KeychainTokenStore.delete()
         UserDefaults.standard.removeObject(forKey: syncTransportKey)
+        UserDefaults.standard.removeObject(forKey: syncFolderKey)
+        UserDefaults.standard.removeObject(forKey: ghOwnerKey)
+        UserDefaults.standard.removeObject(forKey: ghRepoKey)
         syncEngine = nil
         syncTargetLabel = nil
         syncFolderPath = nil
