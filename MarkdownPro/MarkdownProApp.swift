@@ -23,26 +23,15 @@ struct MarkdownProApp: App {
     }
 }
 
-/// Delays app termination until a final sync (if a folder is configured) has
-/// actually written its ops, instead of firing a detached `Task` from
-/// `NSApplication.willTerminateNotification` and hoping it lands before the
-/// process exits. `Store.init()` sets `SyncQuitHook.shared`; if no sync
-/// folder is configured the hook still exists but `Store.syncNow()` is a
-/// no-op, so termination proceeds immediately either way.
+/// Runs a final sync (if a folder is configured) before quitting. `Store.syncNow()`
+/// is now synchronous on the main actor, so this hook returns only once the sync
+/// has actually finished — no `.terminateLater`/watchdog dance needed.
+/// `Store.init()` sets `SyncQuitHook.shared`; if no sync folder is configured the
+/// hook still exists but `Store.syncNow()` is a no-op.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let hook = SyncQuitHook.shared else { return .terminateNow }
-
-        var didReply = false
-        func replyOnce() {
-            guard !didReply else { return }
-            didReply = true
-            NSApp.reply(toApplicationShouldTerminate: true)
-        }
-        // Don't let a stuck sync (e.g. an unreachable folder) hang quitting the app.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { replyOnce() }
-        hook { DispatchQueue.main.async { replyOnce() } }
-        return .terminateLater
+        SyncQuitHook.shared?()
+        return .terminateNow
     }
 }
 

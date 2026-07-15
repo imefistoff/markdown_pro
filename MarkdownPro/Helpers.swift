@@ -133,9 +133,9 @@ extension Date {
 
 /// Bridges `Store.syncNow()` to `AppDelegate.applicationShouldTerminate`.
 /// The App struct's `Store` is a `@StateObject` the delegate can't see
-/// directly, so `Store.init()` publishes itself here; the delegate calls it
-/// with a completion closure and waits (via `.terminateLater`) so the sync's
-/// file writes actually land before the process exits.
+/// directly, so `Store.init()` publishes itself here; the delegate just calls
+/// it, and since `syncNow()` runs synchronously on the main actor, the sync's
+/// file writes have already landed by the time the closure returns.
 enum SyncQuitHook {
-    static var shared: ((@escaping () -> Void) -> Void)?
+    static var shared: (() -> Void)?
 }

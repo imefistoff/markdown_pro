@@ -67,13 +67,10 @@ final class Store: ObservableObject {
         }
         loadSyncFolder()
         syncNow() // launch
-        // Sync-on-quit needs to actually finish before the process exits, so the
-        // hook takes a completion callback that AppDelegate waits on (see
-        // `applicationShouldTerminate` in MarkdownProApp.swift) rather than firing
-        // a detached Task and hoping it lands before teardown.
-        SyncQuitHook.shared = { [weak self] completion in
-            guard let self else { completion(); return }
-            self.syncNow(completion: completion)
+        // Sync is synchronous on the main actor (see `syncNow()`), so the quit
+        // hook can just call it directly and let the app terminate right after.
+        SyncQuitHook.shared = { [weak self] in
+            self?.syncNow()
         }
     }
 
@@ -133,10 +130,10 @@ final class Store: ObservableObject {
         do {
             try body(repo)
             refresh()
+            scheduleDebouncedSync()
         } catch {
             errorMessage = "\(error)"
         }
-        scheduleDebouncedSync()
     }
 
     // MARK: - Sync
@@ -175,30 +172,20 @@ final class Store: ObservableObject {
         adoptable
     }
 
-    /// Runs a sync off the main thread, then refreshes on the main actor.
-    /// `completion` (used by the sync-on-quit path) fires after the refresh,
-    /// whether the sync succeeded or failed, so callers can wait for it to settle.
-    func syncNow(completion: (() -> Void)? = nil) {
-        guard let syncEngine, !isSyncing else {
-            completion?()
-            return
-        }
+    /// Runs a sync synchronously on the main actor. Store is @MainActor and the
+    /// Repository/SQLite connection is single-threaded, so this is the only
+    /// safe way to drive the engine without racing user edits or the poll timer.
+    func syncNow() {
+        guard let syncEngine, !isSyncing else { return }
         isSyncing = true
-        Task.detached {
-            do {
-                try syncEngine.sync()
-            } catch {
-                await MainActor.run { [weak self] in
-                    self?.errorMessage = "Sync failed: \(error)"
-                }
-            }
-            await MainActor.run { [weak self] in
-                self?.refresh()
-                self?.adoptable = (try? syncEngine.availableToAdopt()) ?? []
-                self?.isSyncing = false
-                completion?()
-            }
+        defer { isSyncing = false }
+        do {
+            try syncEngine.sync()
+        } catch {
+            errorMessage = "Sync failed: \(error)"
         }
+        refresh()
+        adoptable = (try? syncEngine.availableToAdopt()) ?? []
     }
 
     private func scheduleDebouncedSync() {
