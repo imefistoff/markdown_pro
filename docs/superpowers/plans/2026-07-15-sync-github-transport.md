@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a `GitHubTransport` so the two Macs can sync through a private GitHub repo over the REST API (fine-grained single-repo PAT), selectable in the app alongside the existing folder transport — without changing anything above the `SyncTransport` protocol.
+**Goal:** Make a private GitHub repo (REST API, fine-grained single-repo PAT) the app's **sole** sync mechanism — the folder transport is removed entirely — without changing anything above the `SyncTransport` protocol.
 
-**Architecture:** One new `SyncTransport` implementation in `MarkdownProCore` (`GitHubTransport`, over a small `GitHubAPI` REST client using `URLSession`), a Keychain token store in the app, a Settings transport picker (Folder | GitHub), and a cursor reset when the sync target changes. The `SyncEngine`, op recording, HLC, replay, and adoption are untouched — the engine already drives any `SyncTransport`.
+**Architecture:** One new `SyncTransport` implementation in `MarkdownProCore` (`GitHubTransport`, over a small `GitHubAPI` REST client using `URLSession`), a Keychain token store, a GitHub-only Settings connect form, and removal of Spec A's `FolderTransport` (and migration of its engine tests onto `GitHubTransport`). The `SyncEngine`, op recording, HLC, replay, and adoption are untouched — the engine already drives any `SyncTransport`.
+
+> **Re-scope (2026-07-15):** Originally this plan added GitHub *alongside* the folder transport (a Folder|GitHub picker). Per the user, GitHub is now the ONLY mechanism and the folder transport is deleted. Tasks 1–4 (GitHubAPI, GitHubTransport, resetSyncCursors, Keychain) are transport-agnostic and unchanged. **Tasks 5–7 below are superseded by the "GitHub-only" task set appended at the end of this document.**
 
 **Tech Stack:** Swift 5.9, `Foundation`/`URLSession` (no external Swift dependencies), `Security` (Keychain, app only), SwiftUI (macOS 14+), XCTest with a stubbed `URLProtocol` (no real network in tests).
 
@@ -1020,4 +1022,31 @@ Plan complete and saved to `docs/superpowers/plans/2026-07-15-sync-github-transp
 **2. Inline Execution** — execute tasks in this session with checkpoints.
 
 Which approach? (Execution should run in a fresh worktree off the up-to-date `main`.)
+
+---
+
+## GitHub-only task set (supersedes Tasks 5–7)
+
+After Tasks 1–4 (GitHub client, transport, cursor reset, Keychain), these three tasks make GitHub the sole sync mechanism and delete the folder transport. Order matters: **R1 (app) first** so the app stops referencing `FolderTransport`, then **R2 (Core)** deletes it and migrates the engine tests, keeping everything building at each step.
+
+### Task R1: App — GitHub-only (remove folder from Store + SyncSettingsView)
+
+**Files:** Modify `MarkdownPro/Store.swift`, `MarkdownPro/Views/SyncSettingsView.swift`.
+
+- `Store`: delete all folder wiring — `syncFolderPath`, `syncFolderKey`, `setSyncFolder(_:)`, the backward-compat fallback, and the `"folder"` branch of `loadSyncEngine()`. `loadSyncEngine()` builds a `GitHubTransport` when `syncTransportKey == "github"` (owner/repo from UserDefaults, token from Keychain), else `syncEngine = nil`. Keep `connectGitHub`, `disconnectSync` (it should still clear `ghOwnerKey`/`ghRepoKey` + Keychain), `resetSyncCursors` use, `syncTargetLabel`, `adopt`, `syncNow`, triggers.
+- `SyncSettingsView`: remove the transport picker and the "Choose Folder…" button; show only the GitHub connect form (owner/repo + token + Verify/Connect, connected status + Disconnect, and the Available-to-adopt list).
+- Verify: `xcodebuild ... -scheme MarkdownPro build` → `** BUILD SUCCEEDED **`; `cd Core && swift test` still green.
+
+### Task R2: Core — delete FolderTransport + migrate engine tests
+
+**Files:** Delete `Core/Sources/MarkdownProCore/FolderTransport.swift`, `Core/Tests/MarkdownProCoreTests/FolderTransportTests.swift`. Modify `SyncEngineTests.swift`, `SyncDocumentTests.swift`, `SyncAdoptionTests.swift`, and any source comment referencing the folder transport (`SyncTransport.swift`, `Repository.swift`).
+
+- Migrate each test file's `makePair()` (and equivalents) from `FolderTransport(root:deviceId:)` over a temp folder to `GitHubTransport(owner:repo:token:deviceId:session: FakeGitHubServer.session())` over a shared in-memory repo (call `FakeGitHubServer.reset()` in `setUp`) — mirroring `GitHubTransportTests.testConvergesThroughEngineOverSharedRepo`.
+- Fix folder-specific assertions: the containment test that inspects `ops/*.jsonl` on disk should instead inspect `FakeGitHubServer.files` (assert no file's bytes contain the unsynced project's data).
+- `SyncDocumentTests` keeps using `MARKDOWNPRO_SYNC_ROOT` for managed copies (transport-agnostic); only the transport in `makePair` changes.
+- Verify: `cd Core && swift test` all green (the engine/doc/adoption convergence coverage now runs over `GitHubTransport`); the app still builds (R1 already removed its folder refs).
+
+### Task R3: QA — GitHub-only checklist
+
+**Files:** Modify `docs/QA_CHECKLIST.md`. Ensure the sync section is GitHub-only (no folder steps); keep the Spec A `§ Sync` convergence items but framed against the GitHub repo. Manual two-Mac pass over one private repo.
 
