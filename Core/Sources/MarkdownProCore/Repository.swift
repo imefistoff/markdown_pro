@@ -1081,4 +1081,82 @@ public final class Repository {
             ON CONFLICT(entity_uuid) DO UPDATE SET hlc = excluded.hlc
             """, [.text(uuid), .text(entity.rawValue), .text(hlc.description)])
     }
+
+    // MARK: - Sync engine support
+
+    public func adoptedProjectUUIDs() throws -> Set<String> {
+        Set(try db.query("SELECT uuid FROM projects WHERE synced = 1").compactMap { $0.stringOrNil("uuid") })
+    }
+
+    /// Creates (or re-marks) a local project shell for a remote project so replay
+    /// can fill it. Idempotent: adopting twice keeps the one row.
+    @discardableResult
+    public func adoptProject(remoteUUID: String, name: String) throws -> Int64 {
+        try db.transaction {
+            if let existing = try db.query("SELECT id FROM projects WHERE uuid = ?", [.text(remoteUUID)]).first {
+                let id = existing.int("id")
+                try db.execute("UPDATE projects SET synced = 1 WHERE id = ?", [.integer(id)])
+                return id
+            }
+            try db.execute("""
+                INSERT INTO projects (name, color, created_at, updated_at, uuid, synced)
+                VALUES (?, '#5E6AD2', ?, ?, ?, 1)
+                """, [.text(name), .text(now()), .text(now()), .text(remoteUUID)])
+            return db.lastInsertRowId
+        }
+    }
+
+    private func selfDeviceRow() throws -> SQLRow? {
+        try db.query("SELECT * FROM sync_devices WHERE is_self = 1 LIMIT 1").first
+    }
+
+    public func selfPublishCursor() throws -> Int64 {
+        try selfDeviceRow()?.int("cursor") ?? 0
+    }
+
+    public func setSelfPublishCursor(_ opId: Int64) throws {
+        try db.execute("UPDATE sync_devices SET cursor = ? WHERE is_self = 1", [.integer(opId)])
+    }
+
+    public func remoteCursors() throws -> [String: Int] {
+        var out: [String: Int] = [:]
+        for r in try db.query("SELECT device_id, cursor FROM sync_devices WHERE is_self = 0") {
+            out[r.string("device_id")] = Int(r.int("cursor"))
+        }
+        return out
+    }
+
+    public func setRemoteCursors(_ cursors: [String: Int]) throws {
+        for (device, cursor) in cursors {
+            try db.execute("UPDATE sync_devices SET cursor = ? WHERE device_id = ? AND is_self = 0",
+                           [.integer(Int64(cursor)), .text(device)])
+        }
+    }
+
+    public func upsertRemoteDevices(_ devices: [SyncDevice]) throws {
+        let selfId = try syncState().deviceId
+        for device in devices where device.deviceId != selfId {
+            try db.execute("""
+                INSERT INTO sync_devices (device_id, name, is_self, cursor) VALUES (?, ?, 0, 0)
+                ON CONFLICT(device_id) DO UPDATE SET name = excluded.name
+                """, [.text(device.deviceId), .text(device.name)])
+        }
+    }
+
+    public func opRow(_ r: SQLRow) -> Op {
+        Op(entity: SyncEntity(rawValue: r.string("entity")) ?? .task,
+           entityUUID: r.string("entity_uuid"),
+           kind: OpKind(rawValue: r.string("kind")) ?? .update,
+           field: r.stringOrNil("field"), value: r.stringOrNil("value"),
+           parentUUID: r.stringOrNil("parent_uuid"), deviceId: r.string("device_id"),
+           hlc: r.string("hlc"), createdAt: r.string("created_at"))
+    }
+
+    public func localOps(sinceSelfCursor cursor: Int64) throws -> (ops: [Op], maxId: Int64) {
+        let deviceId = try syncState().deviceId
+        let rows = try db.query("SELECT * FROM ops WHERE device_id = ? AND id > ? ORDER BY id",
+                                [.text(deviceId), .integer(cursor)])
+        let maxId = rows.last?.int("id") ?? cursor
+        return (rows.map(opRow), maxId)
+    }
 }
