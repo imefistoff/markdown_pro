@@ -195,3 +195,26 @@ final class ReviewTests: XCTestCase {
         XCTAssertThrowsError(try repo.applyVerdict(.approve, documentId: 999))
     }
 }
+
+extension ReviewTests {
+    func testSubmitSpecKindEntersQueue() throws {
+        let id = try repo.submitForReview(taskId: taskId, path: "/tmp/spec.md", title: "Spec", kind: .spec)
+        XCTAssertEqual(try repo.document(id: id)?.kind, .spec)
+        XCTAssertEqual(try repo.document(id: id)?.state, .needsReview)
+        XCTAssertTrue(try repo.reviewQueue().contains { $0.document.id == id })
+    }
+
+    func testSubmitPlanDoesNotSupersedeApprovedSpec() throws {
+        // A task can carry an approved spec AND a plan in review at once; submitting
+        // the plan must not supersede the spec (supersede is scoped to same kind).
+        let specId = try repo.submitForReview(taskId: taskId, path: "/tmp/spec.md", kind: .spec)
+        try repo.applyVerdict(.approve, documentId: specId)
+        let planId = try repo.submitForReview(taskId: taskId, path: "/tmp/plan.md", kind: .plan)
+        XCTAssertEqual(try repo.document(id: specId)?.state, .approved)
+        XCTAssertEqual(try repo.document(id: planId)?.state, .needsReview)
+    }
+
+    func testSubmitRejectsNonReviewableKind() {
+        XCTAssertThrowsError(try repo.submitForReview(taskId: taskId, path: "/tmp/n.md", kind: .note))
+    }
+}

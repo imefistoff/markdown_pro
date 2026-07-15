@@ -14,10 +14,12 @@ public final class Repository {
 
     public enum RepositoryError: Error, CustomStringConvertible {
         case notFound(String)
+        case invalidArgument(String)
 
         public var description: String {
             switch self {
             case .notFound(let m): return "not found: \(m)"
+            case .invalidArgument(let m): return "invalid argument: \(m)"
             }
         }
     }
@@ -388,13 +390,16 @@ public final class Repository {
     /// *different* path for the task supersedes any settled proposal it replaces.
     @discardableResult
     public func submitForReview(taskId: Int64, path: String, title: String? = nil,
-                                actor: String = "claude") throws -> Int64 {
+                                kind: DocumentKind = .proposal, actor: String = "claude") throws -> Int64 {
+        guard kind.isReviewable else {
+            throw RepositoryError.invalidArgument("kind \(kind.rawValue) is not reviewable")
+        }
         let expanded = (path as NSString).expandingTildeInPath
         let resolvedTitle = title ?? (expanded as NSString).lastPathComponent
         return try db.transaction {
             let existing = try db.query(
-                "SELECT id, round, title FROM documents WHERE task_id = ? AND path = ? AND kind = 'proposal'",
-                [.integer(taskId), .text(expanded)]).first
+                "SELECT id, round, title FROM documents WHERE task_id = ? AND path = ? AND kind = ?",
+                [.integer(taskId), .text(expanded), .text(kind.rawValue)]).first
             let docId: Int64
             if let existing {
                 docId = existing.int("id")
@@ -408,19 +413,22 @@ public final class Repository {
             } else {
                 try db.execute("""
                     INSERT INTO documents (task_id, project_id, path, title, created_at, kind, state, round, updated_at)
-                    VALUES (?, NULL, ?, ?, ?, 'proposal', 'needs_review', 1, ?)
+                    VALUES (?, NULL, ?, ?, ?, ?, 'needs_review', 1, ?)
                     """,
-                    [.integer(taskId), .text(expanded), .text(resolvedTitle), .text(now()), .text(now())])
+                    [.integer(taskId), .text(expanded), .text(resolvedTitle), .text(now()),
+                     .text(kind.rawValue), .text(now())])
                 docId = db.lastInsertRowId
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
                                 message: "submitted “\(resolvedTitle)” for review")
             }
+            // Supersede only settled proposals of the SAME kind at other paths, so an
+            // approved spec is untouched when a plan is submitted for the same task.
             try db.execute("""
                 UPDATE documents SET state = 'superseded', updated_at = ?
-                WHERE task_id = ? AND kind = 'proposal' AND path != ?
+                WHERE task_id = ? AND kind = ? AND path != ?
                   AND state IN ('approved', 'rejected')
                 """,
-                [.text(now()), .integer(taskId), .text(expanded)])
+                [.text(now()), .integer(taskId), .text(kind.rawValue), .text(expanded)])
             try setAttentionColumn(taskId: taskId, TaskAttention.needsReview.rawValue)
             return docId
         }
@@ -551,7 +559,7 @@ public final class Repository {
             FROM documents d
             JOIN tasks t ON t.id = d.task_id
             JOIN projects p ON p.id = t.project_id
-            WHERE d.kind = 'proposal' AND d.state = 'needs_review'
+            WHERE d.kind IN ('proposal', 'spec', 'plan') AND d.state = 'needs_review'
             ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC
             """).map { r in
             ReviewQueueItem(document: linkedDocument(from: r), taskId: r.int("task_id"),
