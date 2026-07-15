@@ -1317,6 +1317,13 @@ public final class Repository {
         }
     }
 
+    /// Zeroes every sync cursor (self publish cursor + all remote cursors) so a
+    /// newly-selected transport target is seeded from the full local op log and
+    /// re-reads every remote batch. Safe because replay is idempotent.
+    public func resetSyncCursors() throws {
+        try db.execute("UPDATE sync_devices SET cursor = 0")
+    }
+
     public func upsertRemoteDevices(_ devices: [SyncDevice]) throws {
         let selfId = try syncState().deviceId
         for device in devices where device.deviceId != selfId {

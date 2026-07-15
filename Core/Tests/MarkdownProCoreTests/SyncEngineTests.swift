@@ -154,4 +154,18 @@ final class SyncEngineTests: XCTestCase {
         let bTaskProject = try p.b.repo.db.query("SELECT project_id FROM tasks WHERE uuid = ?", [.text(taskUUID)]).first?.intOrNil("project_id")
         XCTAssertEqual(bTaskProject, bBetaId, "a cross-project move must land the task under the peer's matching project")
     }
+
+    func testResetSyncCursorsZeroesSelfAndRemote() throws {
+        let tdb = try TestDatabase()
+        _ = try tdb.repo.syncState()   // ensures the self device row exists
+        try tdb.repo.db.execute("UPDATE sync_devices SET cursor = 7 WHERE is_self = 1")
+        try tdb.repo.db.execute("""
+            INSERT INTO sync_devices (device_id, name, is_self, cursor) VALUES ('remote', 'R', 0, 9)
+            """)
+
+        try tdb.repo.resetSyncCursors()
+
+        let cursors = try tdb.repo.db.query("SELECT cursor FROM sync_devices").map { $0.int("cursor") }
+        XCTAssertEqual(cursors, [0, 0], "all cursors reset to 0")
+    }
 }
