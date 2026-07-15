@@ -17,6 +17,32 @@ public final class SyncEngine {
         try pullAndReplay()
     }
 
+    public struct AdoptableProject: Identifiable, Sendable, Equatable {
+        public let uuid: String
+        public let name: String
+        public var id: String { uuid }
+        public init(uuid: String, name: String) { self.uuid = uuid; self.name = name }
+    }
+
+    /// Projects present in the transport that this machine has not adopted.
+    /// Reads the whole transport (cursor 0) — a catalog, not a sync step.
+    public func availableToAdopt() throws -> [AdoptableProject] {
+        let changes = try transport.fetch(since: [:])
+        let localUUIDs = Set(try repo.db.query("SELECT uuid FROM projects").compactMap { $0.stringOrNil("uuid") })
+
+        // Latest name per project uuid, by HLC.
+        var latestName: [String: (name: String, hlc: String)] = [:]
+        for op in changes.ops where op.entity == .project && op.field == "name" {
+            guard let name = op.value else { continue }
+            if let current = latestName[op.entityUUID], current.hlc >= op.hlc { continue }
+            latestName[op.entityUUID] = (name, op.hlc)
+        }
+        return latestName
+            .filter { !localUUIDs.contains($0.key) }
+            .map { AdoptableProject(uuid: $0.key, name: $0.value.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
     private func publishLocal() throws {
         try hashSyncedDocuments()
         let cursor = try repo.selfPublishCursor()
