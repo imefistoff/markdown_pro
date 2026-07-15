@@ -265,9 +265,15 @@ public final class Repository {
             for name in labels {
                 try addLabel(taskId: taskId, name: name)
             }
-            for (index, title) in subtasks.enumerated() {
-                try db.execute("INSERT INTO subtasks (task_id, title, sort_order) VALUES (?, ?, ?)",
-                               [.integer(taskId), .text(title), .real(Double(index))])
+            for (index, subtaskTitle) in subtasks.enumerated() {
+                let subUUID = UUID().uuidString
+                try db.execute("INSERT INTO subtasks (task_id, title, sort_order, uuid) VALUES (?, ?, ?, ?)",
+                               [.integer(taskId), .text(subtaskTitle), .real(Double(index)), .text(subUUID)])
+                if let taskUUID = try entityUUID(.task, id: taskId) {
+                    try recordInsert(.subtask, uuid: subUUID, projectId: projectId, parentUUID: taskUUID, fields: [
+                        ("title", .text(subtaskTitle)), ("done", .integer(0)), ("sort_order", .real(Double(index)))
+                    ])
+                }
             }
             try logActivity(taskId: taskId, actor: actor, kind: "created", message: "created this task")
             return taskId
@@ -762,11 +768,11 @@ public final class Repository {
                                       documentPathResolver: (ExportedDocument) -> String?) throws -> Int64 {
         try db.transaction {
             try db.execute("""
-                INSERT INTO projects (name, color, archived, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO projects (name, color, archived, created_at, updated_at, uuid)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 [.text(name), .text(project.color), .integer(project.archived ? 1 : 0),
-                 .text(project.createdAt), .text(project.updatedAt)])
+                 .text(project.createdAt), .text(project.updatedAt), .text(UUID().uuidString)])
             let projectId = db.lastInsertRowId
 
             for document in project.documents {
@@ -777,13 +783,14 @@ public final class Repository {
             for task in project.tasks {
                 try db.execute("""
                     INSERT INTO tasks (project_id, title, details, status, priority, due_date,
-                                       sort_order, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       sort_order, created_at, updated_at, uuid)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [.integer(projectId), .text(task.title), .text(task.details),
                      .text(task.status), .text(task.priority),
                      task.dueDate.map { .text($0) } ?? .null,
-                     .real(task.sortOrder), .text(task.createdAt), .text(task.updatedAt)])
+                     .real(task.sortOrder), .text(task.createdAt), .text(task.updatedAt),
+                     .text(UUID().uuidString)])
                 let taskId = db.lastInsertRowId
 
                 // addLabel opens no transaction of its own, and already merges by
@@ -793,18 +800,20 @@ public final class Repository {
                 }
 
                 for subtask in task.subtasks {
-                    try db.execute("INSERT INTO subtasks (task_id, title, done, sort_order) VALUES (?, ?, ?, ?)",
-                                   [.integer(taskId), .text(subtask.title),
-                                    .integer(subtask.done ? 1 : 0), .real(subtask.sortOrder)])
+                    try db.execute("""
+                        INSERT INTO subtasks (task_id, title, done, sort_order, uuid) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        [.integer(taskId), .text(subtask.title),
+                         .integer(subtask.done ? 1 : 0), .real(subtask.sortOrder), .text(UUID().uuidString)])
                 }
 
                 for entry in task.activity {
                     try db.execute("""
-                        INSERT INTO activity (task_id, actor, kind, message, created_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO activity (task_id, actor, kind, message, created_at, uuid)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         [.integer(taskId), .text(entry.actor), .text(entry.kind),
-                         .text(entry.message), .text(entry.createdAt)])
+                         .text(entry.message), .text(entry.createdAt), .text(UUID().uuidString)])
                 }
 
                 for document in task.documents {
@@ -824,10 +833,12 @@ public final class Repository {
                                         projectId: Int64?,
                                         resolver: (ExportedDocument) -> String?) throws {
         guard let path = resolver(document) else { return }
-        try db.execute("INSERT INTO documents (task_id, project_id, path, title, created_at) VALUES (?, ?, ?, ?, ?)",
-                       [taskId.map { .integer($0) } ?? .null,
-                        projectId.map { .integer($0) } ?? .null,
-                        .text(path), .text(document.title), .text(now())])
+        try db.execute("""
+            INSERT INTO documents (task_id, project_id, path, title, created_at, uuid) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [taskId.map { .integer($0) } ?? .null,
+             projectId.map { .integer($0) } ?? .null,
+             .text(path), .text(document.title), .text(now()), .text(UUID().uuidString)])
     }
 
     // MARK: - Stats

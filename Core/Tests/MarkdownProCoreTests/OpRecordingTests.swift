@@ -223,4 +223,65 @@ final class OpRecordingTests: XCTestCase {
                       "links are LWW boolean updates, never insert/delete")
         XCTAssertEqual(linkOps.map { $0.string("value") }, ["1", "0"])
     }
+
+    // MARK: UUID stamping on raw inserts (regression: NULL uuid -> "" entity_uuid collisions)
+
+    func testCreateTaskWithSubtasksInSyncedProjectRecordsSubtaskOps() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "T", subtasks: ["a", "b"])
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        let subtaskInserts = try tdb.repo.db.query(
+            "SELECT entity_uuid FROM ops WHERE entity = 'subtask' AND kind = 'insert' AND parent_uuid = ?",
+            [.text(taskUUID)])
+        XCTAssertEqual(subtaskInserts.count, 2, "both inline subtasks record an insert op")
+        XCTAssertTrue(subtaskInserts.allSatisfy { !$0.string("entity_uuid").isEmpty },
+                      "no subtask op may have an empty entity_uuid")
+    }
+
+    func testSyncingProjectWithInlineSubtasksEmitsNoEmptyUUIDOps() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Later synced")
+        _ = try tdb.repo.createTask(projectId: projectId, title: "with inline subs", subtasks: ["x", "y"])
+        try tdb.repo.setProjectSynced(id: projectId, synced: true) // triggers snapshotProjectContents
+        let empties = try tdb.repo.db.query("SELECT 1 FROM ops WHERE entity_uuid = '' OR entity_uuid IS NULL")
+        XCTAssertTrue(empties.isEmpty, "no op may be recorded with an empty entity_uuid")
+    }
+
+    func testImportedRowsGetUUIDs() throws {
+        let tdb = try TestDatabase()
+        let project = ExportedProject(
+            name: "Imported with subtask",
+            color: "#5E6AD2",
+            archived: false,
+            createdAt: "2026-06-01T09:00:00.000Z",
+            updatedAt: "2026-06-02T09:00:00.000Z",
+            documents: [],
+            tasks: [
+                ExportedTask(
+                    title: "Imported task",
+                    details: "",
+                    status: "todo",
+                    priority: "none",
+                    dueDate: nil,
+                    sortOrder: 1,
+                    createdAt: "2026-06-01T09:00:00.000Z",
+                    updatedAt: "2026-06-01T09:00:00.000Z",
+                    labels: [],
+                    subtasks: [ExportedSubtask(title: "imported subtask", done: false, sortOrder: 1)],
+                    activity: [],
+                    documents: []
+                )
+            ])
+        let projectId = try tdb.repo.insertImportedProject(project, name: "Imported with subtask") { _ in nil }
+
+        let taskRow = try tdb.repo.db.query("SELECT uuid FROM tasks WHERE project_id = ?", [.integer(projectId)]).first
+        let taskUUID = taskRow?.stringOrNil("uuid")
+        XCTAssertFalse(taskUUID == nil || taskUUID == "", "imported task row must have a non-empty uuid")
+
+        let taskId = try tdb.repo.db.query("SELECT id FROM tasks WHERE project_id = ?", [.integer(projectId)]).first!.int("id")
+        let subtaskRow = try tdb.repo.db.query("SELECT uuid FROM subtasks WHERE task_id = ?", [.integer(taskId)]).first
+        let subtaskUUID = subtaskRow?.stringOrNil("uuid")
+        XCTAssertFalse(subtaskUUID == nil || subtaskUUID == "", "imported subtask row must have a non-empty uuid")
+    }
 }
