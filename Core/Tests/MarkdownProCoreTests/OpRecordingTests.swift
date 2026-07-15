@@ -147,4 +147,34 @@ final class OpRecordingTests: XCTestCase {
         XCTAssertFalse(try tdb.repo.db.query(
             "SELECT 1 FROM tombstones WHERE entity_uuid = ?", [.text(taskUUID)]).isEmpty)
     }
+
+    func testUpdateTaskSameDueDateRecordsNoDueDateOp() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Shared")
+        try tdb.repo.setProjectSynced(id: projectId, synced: true)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "T", dueDate: "2026-08-01")
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        let before = try tdb.repo.db.query("SELECT COALESCE(MAX(id), 0) AS m FROM ops").first!.int("m")
+        try tdb.repo.updateTask(id: taskId, changes: .init(dueDate: "2026-08-01"))
+        let dueOps = try tdb.repo.db.query(
+            "SELECT 1 FROM ops WHERE id > ? AND entity_uuid = ? AND field = 'due_date'",
+            [.integer(before), .text(taskUUID)])
+        XCTAssertTrue(dueOps.isEmpty, "re-setting the same due date must record no op")
+    }
+
+    func testTaskMoveRecordsProjectIdUnderNewProject() throws {
+        let tdb = try TestDatabase()
+        let projectA = try tdb.repo.createProject(name: "A")
+        try tdb.repo.setProjectSynced(id: projectA, synced: true)
+        let projectB = try tdb.repo.createProject(name: "B")
+        try tdb.repo.setProjectSynced(id: projectB, synced: true)
+        let taskId = try tdb.repo.createTask(projectId: projectA, title: "movable")
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        let before = try tdb.repo.db.query("SELECT COALESCE(MAX(id), 0) AS m FROM ops").first!.int("m")
+        try tdb.repo.updateTask(id: taskId, changes: .init(projectId: projectB))
+        let op = try tdb.repo.db.query(
+            "SELECT value FROM ops WHERE id > ? AND entity_uuid = ? AND field = 'project_id'",
+            [.integer(before), .text(taskUUID)]).first
+        XCTAssertEqual(op?.stringOrNil("value"), String(projectB), "a move records project_id under the new project")
+    }
 }

@@ -310,10 +310,13 @@ public final class Repository {
             syncFields.append(("priority", .text(priority.rawValue)))
         }
         if let dueDate = changes.dueDate {
-            sets.append("due_date = ?")
-            bindings.append(dueDate.map { .text($0) } ?? .null)
-            logs.append(("field", dueDate.map { "set due date to \($0)" } ?? "cleared the due date"))
-            syncFields.append(("due_date", dueDate.map { .text($0) } ?? .null))
+            let currentDay = current.dueDate.map(DateCoding.encodeDay)
+            if dueDate != currentDay {
+                sets.append("due_date = ?")
+                bindings.append(dueDate.map { .text($0) } ?? .null)
+                logs.append(("field", dueDate.map { "set due date to \($0)" } ?? "cleared the due date"))
+                syncFields.append(("due_date", dueDate.map { .text($0) } ?? .null))
+            }
         }
         if let projectId = changes.projectId, projectId != current.projectId {
             sets.append("project_id = ?")
