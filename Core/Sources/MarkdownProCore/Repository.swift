@@ -1088,6 +1088,54 @@ public final class Repository {
         Set(try db.query("SELECT uuid FROM projects WHERE synced = 1").compactMap { $0.stringOrNil("uuid") })
     }
 
+    /// Synced documents whose file should be (re)hashed on the next publish.
+    public func syncedDocumentsNeedingHash() throws -> [(id: Int64, uuid: String, path: String, currentHash: String?)] {
+        let rows = try db.query("""
+            SELECT d.id, d.uuid, d.path, d.content_hash FROM documents d
+            LEFT JOIN tasks t ON t.id = d.task_id
+            LEFT JOIN projects pp ON pp.id = d.project_id
+            LEFT JOIN projects pt ON pt.id = t.project_id
+            WHERE COALESCE(pp.synced, pt.synced, 0) = 1
+            """)
+        return rows.map { ($0.int("id"), $0.string("uuid"), $0.string("path"), $0.stringOrNil("content_hash")) }
+    }
+
+    /// Records a content_hash change (an op) and stores it.
+    public func setDocumentContentHash(id: Int64, hash: String) throws {
+        try db.transaction {
+            try db.execute("UPDATE documents SET content_hash = ?, updated_at = ? WHERE id = ?",
+                           [.text(hash), .text(now()), .integer(id)])
+            if let uuid = try entityUUID(.document, id: id), let projectId = try projectId(forDocument: id) {
+                try recordUpdate(.document, uuid: uuid, projectId: projectId, field: "content_hash", value: .text(hash))
+            }
+        }
+    }
+
+    public func documentLocalPath(uuid: String) throws -> String? {
+        try db.query("SELECT path FROM documents WHERE uuid = ?", [.text(uuid)]).first.flatMap {
+            let p = $0.string("path"); return p.isEmpty ? nil : p
+        }
+    }
+
+    /// Device-local: never recorded as an op.
+    public func setDocumentPath(uuid: String, path: String) throws {
+        try db.execute("UPDATE documents SET path = ? WHERE uuid = ?", [.text(path), .text(uuid)])
+    }
+
+    /// A synced document's target content hash (from an incoming op), keyed by uuid.
+    public func documentContentHash(uuid: String) throws -> String? {
+        try db.query("SELECT content_hash FROM documents WHERE uuid = ?", [.text(uuid)]).first?.stringOrNil("content_hash")
+    }
+
+    public func projectUUIDForDocument(uuid: String) throws -> String? {
+        try db.query("""
+            SELECT COALESCE(pp.uuid, pt.uuid) AS u FROM documents d
+            LEFT JOIN projects pp ON pp.id = d.project_id
+            LEFT JOIN tasks t ON t.id = d.task_id
+            LEFT JOIN projects pt ON pt.id = t.project_id WHERE d.uuid = ?
+            """, [.text(uuid)]).first?.stringOrNil("u")
+    }
+
     /// Creates (or re-marks) a local project shell for a remote project so replay
     /// can fill it. Idempotent: adopting twice keeps the one row.
     @discardableResult
