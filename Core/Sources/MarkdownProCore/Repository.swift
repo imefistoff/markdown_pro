@@ -14,7 +14,9 @@ public final class Repository {
 
     /// Lazily bootstrapped so `init(db:)` stays unchanged for the app, the MCP
     /// server, and tests. First mutation of a synced project pays the cost.
-    func syncState() throws -> SyncState {
+    /// Public so the app layer can read `deviceId` when constructing a
+    /// `FolderTransport` for `SyncEngine` (Task 15).
+    public func syncState() throws -> SyncState {
         if let s = _sync { return s }
         let s = try SyncState(db: db)
         _sync = s
@@ -48,7 +50,8 @@ public final class Repository {
             Project(id: r.int("id"), name: r.string("name"), color: r.string("color"),
                     archived: r.bool("archived"), createdAt: r.date("created_at"),
                     updatedAt: r.date("updated_at"),
-                    taskCount: Int(r.int("task_count")), doneCount: Int(r.int("done_count")))
+                    taskCount: Int(r.int("task_count")), doneCount: Int(r.int("done_count")),
+                    synced: r.bool("synced"))
         }
     }
 

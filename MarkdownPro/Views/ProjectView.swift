@@ -81,6 +81,13 @@ struct ProjectView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
+            Toggle("Sync this project", isOn: Binding(
+                get: { project.synced },
+                set: { store.setProjectSynced(id: project.id, synced: $0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Share this project's tasks and documents through the sync folder.")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

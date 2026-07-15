@@ -130,3 +130,12 @@ extension Date {
         return formatter.localizedString(for: self, relativeTo: Date())
     }
 }
+
+/// Bridges `Store.syncNow()` to `AppDelegate.applicationShouldTerminate`.
+/// The App struct's `Store` is a `@StateObject` the delegate can't see
+/// directly, so `Store.init()` publishes itself here; the delegate calls it
+/// with a completion closure and waits (via `.terminateLater`) so the sync's
+/// file writes actually land before the process exits.
+enum SyncQuitHook {
+    static var shared: ((@escaping () -> Void) -> Void)?
+}

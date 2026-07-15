@@ -39,6 +39,14 @@ final class Store: ObservableObject {
     private var lastDataVersion: Int64 = 0
     private var timer: Timer?
 
+    /// The folder both Macs point at (Dropbox/Syncthing/etc.). Persisted.
+    @Published private(set) var syncFolderPath: String?
+    @Published private(set) var adoptable: [SyncEngine.AdoptableProject] = []
+    private var syncEngine: SyncEngine?
+    private var syncDebounce: Timer?
+    private var isSyncing = false
+    private let syncFolderKey = "MarkdownProSyncFolder"
+
     init() {
         do {
             let db = try Database.open()
@@ -56,6 +64,16 @@ final class Store: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.pollForExternalChanges()
             }
+        }
+        loadSyncFolder()
+        syncNow() // launch
+        // Sync-on-quit needs to actually finish before the process exits, so the
+        // hook takes a completion callback that AppDelegate waits on (see
+        // `applicationShouldTerminate` in MarkdownProApp.swift) rather than firing
+        // a detached Task and hoping it lands before teardown.
+        SyncQuitHook.shared = { [weak self] completion in
+            guard let self else { completion(); return }
+            self.syncNow(completion: completion)
         }
     }
 
@@ -117,6 +135,77 @@ final class Store: ObservableObject {
             refresh()
         } catch {
             errorMessage = "\(error)"
+        }
+        scheduleDebouncedSync()
+    }
+
+    // MARK: - Sync
+
+    private func loadSyncFolder() {
+        guard let repo,
+              let path = UserDefaults.standard.string(forKey: syncFolderKey), !path.isEmpty else { return }
+        syncFolderPath = path
+        do {
+            let deviceId = try repo.syncState().deviceId
+            syncEngine = SyncEngine(repo: repo, transport: FolderTransport(root: URL(fileURLWithPath: path), deviceId: deviceId))
+        } catch {
+            errorMessage = "Could not start sync: \(error)"
+        }
+    }
+
+    func setSyncFolder(_ url: URL) {
+        UserDefaults.standard.set(url.path, forKey: syncFolderKey)
+        loadSyncFolder()
+        syncNow()
+    }
+
+    func setProjectSynced(id: Int64, synced: Bool) {
+        perform { try $0.setProjectSynced(id: id, synced: synced) }
+        syncNow()
+    }
+
+    func adopt(_ project: SyncEngine.AdoptableProject) {
+        perform { try $0.adoptProject(remoteUUID: project.uuid, name: project.name) }
+        syncNow()
+    }
+
+    /// Snapshot of the last-known adoption catalog. Refreshed after every sync;
+    /// see the `adoptable` published property for the live value views should bind to.
+    func availableToAdopt() -> [SyncEngine.AdoptableProject] {
+        adoptable
+    }
+
+    /// Runs a sync off the main thread, then refreshes on the main actor.
+    /// `completion` (used by the sync-on-quit path) fires after the refresh,
+    /// whether the sync succeeded or failed, so callers can wait for it to settle.
+    func syncNow(completion: (() -> Void)? = nil) {
+        guard let syncEngine, !isSyncing else {
+            completion?()
+            return
+        }
+        isSyncing = true
+        Task.detached {
+            do {
+                try syncEngine.sync()
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.errorMessage = "Sync failed: \(error)"
+                }
+            }
+            await MainActor.run { [weak self] in
+                self?.refresh()
+                self?.adoptable = (try? syncEngine.availableToAdopt()) ?? []
+                self?.isSyncing = false
+                completion?()
+            }
+        }
+    }
+
+    private func scheduleDebouncedSync() {
+        guard syncEngine != nil else { return }
+        syncDebounce?.invalidate()
+        syncDebounce = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.syncNow() }
         }
     }
 
