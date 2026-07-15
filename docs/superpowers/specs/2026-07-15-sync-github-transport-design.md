@@ -30,26 +30,27 @@ untouched.
   is just "sync is a no-op, retry next cycle" — no half-finished clone or merge
   state. The data (task ops + small markdown blobs) is tiny, so git's only real
   edge — delta transfer at scale — does not pay for its costs here.
-- **App creates the repo.** On connect the app creates the private repo if it
-  is missing, for smoother onboarding. This requires a classic `repo`-scoped
-  token (a fine-grained single-repo token cannot create a repo). **Trade-off,
-  accepted:** a classic `repo` token can read/write *all* of the user's repos,
-  not just the sync repo. Documented so the choice is deliberate.
+- **You create the repo; a fine-grained, single-repo token.** The user creates
+  an empty private repo once, then the app uses a **fine-grained token scoped to
+  only that repo** (Contents: read and write). Least privilege: the token cannot
+  touch any other repo the user owns. The cost is a ~30-second one-time repo
+  creation on GitHub and no in-app auto-provisioning (a fine-grained single-repo
+  token cannot create a repo — the repo must exist first).
 
 ## Scope
 
 **In:**
 
 - A `GitHubTransport` conforming to the existing `SyncTransport` protocol.
-- Classic-PAT auth stored in the macOS Keychain.
-- Repo provisioning: verify the token, create `markdownpro-sync` (private) if
-  absent, else use it.
+- Fine-grained single-repo PAT auth stored in the macOS Keychain.
+- Repo linking: the user creates an empty private repo; the app verifies the
+  token can read and write it. No in-app repo creation.
 - A Settings ▸ Sync transport picker: **Folder** (existing) or **GitHub**.
 - Cursor reset when the sync target changes, so a new target is fully seeded.
 
 **Out (YAGNI / later):**
 
-- OAuth / device flow; fine-grained tokens; repo creation avoidance.
+- OAuth / device flow; classic tokens; in-app repo creation.
 - A local git clone, git binary, or credential helper.
 - Git LFS, branches, or pull requests.
 - Multiple sync repos, or per-project transport selection (the transport is
@@ -123,14 +124,23 @@ batch lines are already skipped by `OpCodec.decode`.
 
 ## Auth & repo provisioning
 
-- The PAT is stored in the **macOS Keychain** (a generic password item keyed to
-  the app + repo), never in `UserDefaults` or on disk in plaintext.
-- **Connect flow:**
-  1. User pastes the token; app calls `GET /user` to verify it and learn the
-     owner login. Invalid token → clear error, stay disconnected.
-  2. App calls `GET /repos/<owner>/markdownpro-sync`. On 404 it `POST /user/repos`
-     with `{ name: "markdownpro-sync", private: true, auto_init: true }`.
+- The PAT is a **fine-grained token scoped to the single sync repo** with
+  **Contents: read and write** (plus the implicit Metadata: read). It is stored
+  in the **macOS Keychain** (a generic password item keyed to the app + repo),
+  never in `UserDefaults` or on disk in plaintext.
+- **One-time setup (on github.com):** create an empty private repo — e.g.
+  `markdownpro-sync` — initialized with a README so it has a first commit (so
+  `git/trees/HEAD` resolves), then mint a fine-grained token limited to that repo
+  with Contents read/write.
+- **Connect flow (in app):**
+  1. User enters `owner/repo` and pastes the token.
+  2. App calls `GET /repos/<owner>/<repo>` to verify the token can reach it and
+     confirms write access. Invalid token or no access → clear error, stay
+     disconnected.
   3. On success the token goes to the Keychain and the transport is live.
+- The transport also tolerates a genuinely empty repo (no commits): `fetch`
+  treats a missing tree as "no remote changes yet," and the first `publish`
+  creates the initial content via the Contents API.
 - **Disconnect** removes the Keychain item and the persisted transport setting;
   it does not touch the repo.
 
@@ -138,8 +148,8 @@ batch lines are already skipped by `OpCodec.decode`.
 
 - **Settings ▸ Sync** gains a transport picker with two modes:
   - **Folder** — the existing folder picker (`Store.setSyncFolder`), unchanged.
-  - **GitHub** — a token field + **Verify/Connect**, showing the connected repo
-    and a **Disconnect** button once linked.
+  - **GitHub** — an `owner/repo` field + a token field + **Verify/Connect**,
+    showing the connected repo and a **Disconnect** button once linked.
 - The chosen transport (`folder | github`) and its config persist in
   `UserDefaults` (the token itself is in the Keychain). `Store` builds either a
   `FolderTransport` or a `GitHubTransport` and hands it to the unchanged
@@ -168,10 +178,11 @@ batch lines are already skipped by `OpCodec.decode`.
 
 ## Risks
 
-- **Classic-token blast radius.** A `repo`-scoped PAT can read/write every repo
-  the user owns. Mitigation: it lives only in the Keychain; the connect screen
-  states the scope needed and why; a future iteration could support a
-  fine-grained single-repo token if repo auto-creation is dropped.
+- **Token handling.** The fine-grained token is scoped to the single sync repo
+  (Contents: read/write) and cannot touch any other repo — its blast radius is
+  limited by construction. It lives only in the Keychain. The cost is a one-time
+  manual repo creation and token mint on GitHub, and the user must re-mint when
+  the token expires (a clear "token invalid — reconnect" prompt covers this).
 - **Rate limits.** 5,000 authenticated requests/hour. A sync is a handful of
   requests, so this is never approached in normal use; a 403 rate-limit is
   handled as a transient no-op.
