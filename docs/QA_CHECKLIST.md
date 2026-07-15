@@ -159,27 +159,30 @@ the project → **Project Settings…** → set the repo path to a real git repo
 - [ ] Editing a project template then **Reset to default** restores the built-in
       prompt and removes the override (relaunch shows the default in the sheet).
 
-## § Sync (Spec A)
+## § Sync (GitHub)
 
-Manual two-machine pass: two app instances (Task 15 setup) pointed at one
-shared sync folder, chosen in-app via Settings ▸ Sync (`Store.setSyncFolder`).
-The convergence logic itself is covered automatically by
-`SyncEngineTests` / `SyncReplayerTests` / `SyncModelsTests` in
-`Core/Tests/MarkdownProCoreTests`; the items below are the live GUI walk
-that exercises the same paths end to end.
+GitHub is the only sync mechanism. One-time setup: create an empty **private**
+repo (with a README) on GitHub, and a **fine-grained token** scoped to just that
+repo (Contents: read/write). The convergence logic is covered automatically by
+`GitHubTransportTests` / `SyncEngineTests` / `SyncReplayerTests` in
+`Core/Tests/MarkdownProCoreTests` (the engine tests run over `GitHubTransport`);
+the items below are the live two-Mac GUI/network walk.
 
-- [ ] Two Macs, one folder: toggle a project synced on A → it appears under "Available to adopt" on B.
-- [ ] Adopt on B → tasks, subtasks, labels, activity and documents all materialize.
-- [ ] Edit different fields of one task on each Mac without syncing between → after sync, both edits survive.
+- [ ] Settings ▸ Sync: entering owner/repo + a bad token shows a clear "not found or no access" error and stays disconnected.
+- [ ] A valid token connects; the header shows "Connected — GitHub: owner/repo".
+- [ ] Toggle a project synced on Mac A → the repo gains `ops/<A>/1.jsonl`, `blobs/…`, and `devices.json` (check on github.com).
+- [ ] On Mac B (same repo + its own token), the project appears under "Available to adopt"; adopting materializes tasks, subtasks, labels, activity and documents.
+- [ ] Edit different fields of one task on each Mac without syncing between → after sync, both edits survive (field-level merge).
 - [ ] Delete a task on A while editing it on B → after sync, it stays deleted on both.
-- [ ] An unsynced ("private") project never writes anything into the sync folder (inspect `ops/*.jsonl`).
-- [ ] Attach a document on A → the file's content appears on B (managed copy under Application Support/MarkdownPro/Synced).
+- [ ] An unsynced ("private") project never writes anything into the repo (inspect `ops/` on github.com).
+- [ ] Attach a document on A → its content appears on B (managed copy under Application Support/MarkdownPro/Synced).
 - [ ] Edit the document on A → the change reaches B on the next sync.
-- [ ] Claude (MCP) creates a task in a synced project while the app is closed → the task publishes when the app next launches.
-- [ ] Turn the sync folder off/unreachable → the app keeps working; ops accumulate and go out on the next successful sync.
-- [ ] A change made on either Mac converges to the other after sync (bidirectional, not just A → B).
-- [ ] Re-running sync with no new local changes (idempotent re-sync) leaves the DB and `ops/*.jsonl` unchanged.
+- [ ] Claude (MCP) creates a task in a synced project while the app is closed → it publishes when the app next launches.
+- [ ] A change made on either Mac converges to the other after sync (bidirectional).
+- [ ] Idempotent re-sync (no new local changes) adds no new commits to the repo.
 - [ ] Set one Mac's clock behind the other, then sync — HLC causality still resolves correctly (no reordering of updates).
 - [ ] The same label name created independently on both Macs converges to a single label row after sync.
 - [ ] Detaching then re-attaching a label on either Mac converges so the label ends up attached.
 - [ ] A document whose original file still exists on the peer relinks to it; one whose original is missing restores a managed copy.
+- [ ] Revoke/expire the token → sync surfaces a non-blocking "Sync failed" error and the app keeps working; reconnecting with a fresh token resumes.
+- [ ] Disconnect clears the token (Keychain) and stops syncing (stays off after relaunch); the repo is untouched.
