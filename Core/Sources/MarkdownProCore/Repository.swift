@@ -43,8 +43,8 @@ public final class Repository {
 
     @discardableResult
     public func createProject(name: String, color: String = "#5E6AD2") throws -> Int64 {
-        try db.execute("INSERT INTO projects (name, color, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                       [.text(name), .text(color), .text(now()), .text(now())])
+        try db.execute("INSERT INTO projects (name, color, uuid, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                       [.text(name), .text(color), .text(UUID().uuidString), .text(now()), .text(now())])
         return db.lastInsertRowId
     }
 
@@ -159,12 +159,12 @@ public final class Repository {
             let maxOrder = try db.query("SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project_id = ?",
                                         [.integer(projectId)]).first?.double("m") ?? 0
             try db.execute("""
-                INSERT INTO tasks (project_id, title, details, status, priority, due_date, sort_order, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO tasks (project_id, title, details, status, priority, due_date, uuid, sort_order, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [.integer(projectId), .text(title), .text(details), .text(status.rawValue),
                  .text(priority.rawValue), dueDate.map { .text($0) } ?? .null,
-                 .real(maxOrder + 1), .text(now()), .text(now())])
+                 .text(UUID().uuidString), .real(maxOrder + 1), .text(now()), .text(now())])
             let taskId = db.lastInsertRowId
             for name in labels {
                 try addLabel(taskId: taskId, name: name)

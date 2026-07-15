@@ -67,7 +67,7 @@ final class MigrationTests: XCTestCase {
 
         // annotations table exists and is queryable.
         XCTAssertNoThrow(try db.query("SELECT COUNT(*) AS c FROM annotations"))
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 2)
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
     }
 
     func testMigrationIsIdempotentAcrossReopens() throws {
@@ -92,6 +92,54 @@ final class MigrationTests: XCTestCase {
         }
         let taskCols = try db.query("PRAGMA table_info(tasks)").map { $0.string("name") }
         XCTAssertTrue(taskCols.contains("attention"))
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 2)
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+    }
+
+    func testV3AddsUUIDColumnsAndSyncTables() throws {
+        let tdb = try TestDatabase()
+        let db = tdb.repo.db
+
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+
+        for table in ["projects", "tasks", "subtasks", "labels", "documents", "annotations", "activity"] {
+            let cols = try db.query("PRAGMA table_info(\(table))").map { $0.string("name") }
+            XCTAssertTrue(cols.contains("uuid"), "\(table) is missing uuid")
+        }
+        let projectCols = try db.query("PRAGMA table_info(projects)").map { $0.string("name") }
+        XCTAssertTrue(projectCols.contains("synced"))
+        let docCols = try db.query("PRAGMA table_info(documents)").map { $0.string("name") }
+        XCTAssertTrue(docCols.contains("content_hash"))
+
+        let tables = try db.query("SELECT name FROM sqlite_master WHERE type = 'table'").map { $0.string("name") }
+        for expected in ["ops", "field_stamps", "tombstones", "sync_devices", "sync_blobs"] {
+            XCTAssertTrue(tables.contains(expected), "missing table \(expected)")
+        }
+    }
+
+    func testV3BackfillsUUIDForExistingRows() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Backfill me")
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "row with a uuid")
+
+        let projectUUID = try tdb.repo.db.query("SELECT uuid FROM projects WHERE id = ?", [.integer(projectId)])
+            .first?.stringOrNil("uuid")
+        let taskUUID = try tdb.repo.db.query("SELECT uuid FROM tasks WHERE id = ?", [.integer(taskId)])
+            .first?.stringOrNil("uuid")
+
+        XCTAssertNotNil(projectUUID)
+        XCTAssertNotNil(taskUUID)
+        XCTAssertFalse(projectUUID!.isEmpty)
+        XCTAssertNotEqual(projectUUID, taskUUID)
+    }
+
+    func testV3IsIdempotentWhenReopened() throws {
+        let tdb = try TestDatabase()
+        let path = tdb.directory.appendingPathComponent("test.sqlite").path
+        // Reopen the same file — migrate() runs again and must not throw or duplicate.
+        let db2 = try Database.open(path: path)
+        XCTAssertEqual(try db2.query("PRAGMA user_version").first?.int("user_version"), 3)
+        let uuidIndexes = try db2.query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_projects_uuid'")
+        XCTAssertEqual(uuidIndexes.count, 1)
     }
 }
