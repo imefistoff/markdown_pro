@@ -5,7 +5,8 @@ import Foundation
 public struct LaunchScript: Sendable, Equatable {
     public let taskId: Int64
     public let kind: DocumentKind
-    /// Absolute path to the approved document (checked for existence at present time).
+    /// Absolute path to the approved document. Existence is checked later, by
+    /// the confirm sheet — this builder is pure and checks nothing.
     public let documentPath: String
     /// Warp launch-config + script basename, e.g. "markdownpro-task-10".
     public let configName: String

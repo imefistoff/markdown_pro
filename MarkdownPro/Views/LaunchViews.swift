@@ -119,7 +119,7 @@ struct LaunchConfirmSheet: View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.shield.fill")
                 .foregroundStyle(.red)
-            Text("Permission mode “\(request.script.command.contains("--permission-mode ") ? presetName : "")” lets the agent act without asking. Review the command before running.")
+            Text("Permission mode “\(presetName)” lets the agent act without asking. Review the command before running.")
                 .font(.caption)
                 .fixedSize(horizontal: false, vertical: true)
         }

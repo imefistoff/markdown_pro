@@ -51,7 +51,7 @@ public enum LaunchTemplates {
         switch kind {
         case .spec: return defaultSpecPrompt
         case .plan: return defaultPlanPrompt
-        default: return nil
+        case .note, .wiki, .proposal: return nil
         }
     }
 }
@@ -88,7 +88,7 @@ public struct ProjectLaunchSettings: Sendable, Equatable {
         switch kind {
         case .spec: return specPrompt
         case .plan: return planPrompt
-        default: return nil
+        case .note, .wiki, .proposal: return nil
         }
     }
 }

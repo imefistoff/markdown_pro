@@ -29,7 +29,7 @@ struct WarpLauncher: TerminalLauncher {
                        atomically: true, encoding: .utf8)
 
         // configName is ascii (markdownpro-task-N) so the URL needs no escaping.
-        guard let uri = URL(string: "warp://launch/\(script.configName)") else { return }
+        guard let uri = URL(string: "warp://launch/\(script.configName)") else { throw URLError(.badURL) }
         NSWorkspace.shared.open(uri)
     }
 

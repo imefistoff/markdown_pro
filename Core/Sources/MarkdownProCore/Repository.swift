@@ -636,12 +636,12 @@ public final class Repository {
             .map { $0.int("id") })
     }
 
-    /// The newest approved reviewable document for a task — what the Launch
-    /// button acts on.
+    /// The newest approved launchable (spec/plan) document for a task — what
+    /// the Launch button acts on.
     public func latestApprovedDocument(taskId: Int64) throws -> LinkedDocument? {
         try db.query("""
             SELECT * FROM documents
-            WHERE task_id = ? AND state = 'approved' AND kind IN ('proposal','spec','plan')
+            WHERE task_id = ? AND state = 'approved' AND kind IN ('spec','plan')
             ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT 1
             """, [.integer(taskId)]).first.map(linkedDocument(from:))
     }

@@ -233,4 +233,15 @@ final class LaunchRepositoryTests: XCTestCase {
         // TaskItem now exposes launchKind for the button gate.
         XCTAssertEqual(try repo.getTask(id: taskId)?.task.launchKind, .spec)
     }
+
+    func testLaunchTargetIgnoresNewerApprovedProposal() throws {
+        // Approve a spec, then approve a NEWER proposal on the same task.
+        let specId = try repo.submitForReview(taskId: taskId, path: "/tmp/spec.md", kind: .spec)
+        try repo.applyVerdict(.approve, documentId: specId)
+        let propId = try repo.submitForReview(taskId: taskId, path: "/tmp/prop.md", kind: .proposal)
+        try repo.applyVerdict(.approve, documentId: propId)
+        // The button gate (launchKind) and the launch target must agree: both the spec.
+        XCTAssertEqual(try repo.getTask(id: taskId)?.task.launchKind, .spec)
+        XCTAssertEqual(try repo.latestApprovedDocument(taskId: taskId)?.kind, .spec)
+    }
 }

@@ -183,7 +183,6 @@ struct BoardColumn: View {
 }
 
 struct TaskCardView: View {
-    @EnvironmentObject private var store: Store
     let task: TaskItem
 
     var body: some View {

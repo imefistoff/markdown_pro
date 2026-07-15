@@ -115,6 +115,9 @@ struct ProjectSettingsSheet: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
+        if let repoPath = s.wrappedValue.repoPath {
+            panel.directoryURL = URL(fileURLWithPath: repoPath)
+        }
         if panel.runModal() == .OK, let url = panel.url {
             s.wrappedValue.repoPath = url.path
         }
