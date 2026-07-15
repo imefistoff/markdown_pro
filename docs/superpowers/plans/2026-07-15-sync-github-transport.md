@@ -521,11 +521,10 @@ public final class GitHubTransport: SyncTransport {
         if let existing = try api.getContent("devices.json") {
             // Throw rather than silently wipe the roster: overwriting with a
             // self-only map (while keeping the old sha) would erase other devices.
-            guard let map = try? JSONSerialization.jsonObject(with: existing.data) as? [String: String],
-                  let unwrapped = map else {
+            guard let map = try? JSONSerialization.jsonObject(with: existing.data) as? [String: String] else {
                 throw GitHubError.malformed("devices.json")
             }
-            roster = unwrapped
+            roster = map
             sha = existing.sha
         }
         roster[selfDevice.deviceId] = selfDevice.name
