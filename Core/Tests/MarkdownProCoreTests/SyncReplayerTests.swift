@@ -67,6 +67,23 @@ final class SyncReplayerTests: XCTestCase {
                       "a later edit must not resurrect a deleted task")
     }
 
+    func testDeleteInEarlierBatchBlocksLaterInsert() throws {
+        let tdb = try TestDatabase()
+        let (repo, _, projectUUID) = try adoptedProject(tdb)
+        let taskUUID = "phantom-task"
+        // Batch 1: only the delete arrives (the entity was never materialized here).
+        try SyncReplayer(db: repo.db).apply(
+            [op(.task, taskUUID, .delete, hlc: HLC(millis: 20, counter: 0, deviceId: "remote"))],
+            adoptedProjectUUIDs: [projectUUID])
+        // Batch 2: the insert + a field update arrive later.
+        try SyncReplayer(db: repo.db).apply([
+            op(.task, taskUUID, .insert, parent: projectUUID, hlc: HLC(millis: 10, counter: 0, deviceId: "remote")),
+            op(.task, taskUUID, .update, field: "title", value: "resurrected?", hlc: HLC(millis: 11, counter: 0, deviceId: "remote"))
+        ], adoptedProjectUUIDs: [projectUUID])
+        XCTAssertTrue(try repo.db.query("SELECT 1 FROM tasks WHERE uuid = ?", [.text(taskUUID)]).isEmpty,
+                      "a delete seen before the insert must still keep the entity deleted")
+    }
+
     func testUnadoptedProjectOpsAreIgnored() throws {
         let tdb = try TestDatabase()
         let (repo, _, projectUUID) = try adoptedProject(tdb)

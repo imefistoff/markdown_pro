@@ -9,6 +9,11 @@ public struct SyncReplayer {
 
     public init(db: SQLiteConnection) { self.db = db }
 
+    /// Driver contract: the caller must pass a coherent set of ops (the sync
+    /// engine delivers all new remote ops per sync in one call); ops are
+    /// applied in HLC order. An op whose parent/entity is not yet materialized
+    /// and whose project is unadopted is skipped (deletes still tombstone); it
+    /// is re-applied when a later sync delivers it alongside its dependencies.
     public func apply(_ ops: [Op], adoptedProjectUUIDs: Set<String>) throws {
         let ordered = ops.compactMap { op in op.stamp.map { (op, $0) } }
             .sorted { $0.1 < $1.1 }
@@ -127,6 +132,19 @@ public struct SyncReplayer {
         // Deletes are final — for generated-UUID entities only. Label links are
         // name-derived and never tombstoned, so they skip this guard.
         if op.entity != .taskLabel, try isTombstoned(op.entityUUID) { return }
+
+        // Deletes of generated-UUID entities are final regardless of whether the
+        // entity is locally materialized or its project is adopted: tombstone
+        // unconditionally so a later out-of-order insert cannot resurrect it.
+        // (Label links are name-derived, never deleted, so they are excluded.)
+        if op.kind == .delete, op.entity != .taskLabel, let table = table(for: op.entity) {
+            try db.execute("DELETE FROM \(table) WHERE uuid = ?", [.text(op.entityUUID)])
+            try db.execute("""
+                INSERT INTO tombstones (entity_uuid, entity, hlc) VALUES (?, ?, ?)
+                ON CONFLICT(entity_uuid) DO UPDATE SET hlc = excluded.hlc
+                """, [.text(op.entityUUID), .text(op.entity.rawValue), .text(op.hlc)])
+            return
+        }
 
         guard let projectUUID = try projectUUID(for: op), adopted.contains(projectUUID) else { return }
 
