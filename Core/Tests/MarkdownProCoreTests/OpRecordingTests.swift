@@ -284,4 +284,54 @@ final class OpRecordingTests: XCTestCase {
         let subtaskUUID = subtaskRow?.stringOrNil("uuid")
         XCTAssertFalse(subtaskUUID == nil || subtaskUUID == "", "imported subtask row must have a non-empty uuid")
     }
+
+    // MARK: Document / annotation / review recording
+
+    func testAttachDocumentRecordsMetadataNotPath() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "with doc")
+        let path = try tdb.writeFile(named: "spec.md", contents: "# Spec")
+        let docId = try tdb.repo.attachDocument(taskId: taskId, projectId: nil, path: path, title: "Spec")
+
+        let docUUID = try tdb.repo.entityUUID(.document, id: docId)!
+        let fields = try tdb.repo.db.query(
+            "SELECT field FROM ops WHERE entity = 'document' AND entity_uuid = ?", [.text(docUUID)])
+            .compactMap { $0.stringOrNil("field") }
+        XCTAssertTrue(fields.contains("title"))
+        XCTAssertFalse(fields.contains("path"), "path is device-local and must never be an op")
+    }
+
+    func testApplyVerdictRecordsDocumentStateAndTaskAttention() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "review me")
+        let path = try tdb.writeFile(named: "spec.md", contents: "# Spec")
+        let docId = try tdb.repo.submitForReview(taskId: taskId, path: path, title: "Spec")
+        try tdb.repo.applyVerdict(.approve, documentId: docId)
+
+        let docUUID = try tdb.repo.entityUUID(.document, id: docId)!
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        XCTAssertEqual(try tdb.repo.db.query(
+            "SELECT value FROM ops WHERE entity_uuid = ? AND field = 'state' ORDER BY id DESC LIMIT 1",
+            [.text(docUUID)]).first?.string("value"), "approved")
+        XCTAssertEqual(try tdb.repo.db.query(
+            "SELECT value FROM ops WHERE entity_uuid = ? AND field = 'attention' ORDER BY id DESC LIMIT 1",
+            [.text(taskUUID)]).first?.string("value"), "ready_to_execute")
+    }
+
+    func testAnnotationRecordsUnderDocumentParent() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "review me")
+        let path = try tdb.writeFile(named: "spec.md", contents: "# Spec")
+        let docId = try tdb.repo.submitForReview(taskId: taskId, path: path, title: "Spec")
+        let annId = try tdb.repo.addAnnotation(documentId: docId, quote: "Spec", comment: "tighten this")
+
+        let annUUID = try tdb.repo.entityUUID(.annotation, id: annId)!
+        let docUUID = try tdb.repo.entityUUID(.document, id: docId)!
+        XCTAssertEqual(try tdb.repo.db.query(
+            "SELECT parent_uuid FROM ops WHERE entity = 'annotation' AND kind = 'insert' AND entity_uuid = ?",
+            [.text(annUUID)]).first?.stringOrNil("parent_uuid"), docUUID)
+    }
 }

@@ -146,6 +146,20 @@ public final class Repository {
                 try recordUpdate(.taskLabel, uuid: "\(uuid):\(l.string("name"))", projectId: projectId,
                                  field: "attached", value: .text("1"))
             }
+            for d in try db.query("SELECT * FROM documents WHERE task_id = ?", [.integer(taskId)]) {
+                try recordInsert(.document, uuid: d.string("uuid"), projectId: projectId, parentUUID: uuid, fields: [
+                    ("title", .text(d.string("title"))), ("kind", .text(d.string("kind"))),
+                    ("state", d.stringOrNil("state").map { .text($0) } ?? .null),
+                    ("round", .integer(d.int("round")))
+                ])
+            }
+        }
+        for d in try db.query("SELECT * FROM documents WHERE project_id = ?", [.integer(projectId)]) {
+            try recordInsert(.document, uuid: d.string("uuid"), projectId: projectId, parentUUID: projectUUID, fields: [
+                ("title", .text(d.string("title"))), ("kind", .text(d.string("kind"))),
+                ("state", d.stringOrNil("state").map { .text($0) } ?? .null),
+                ("round", .integer(d.int("round")))
+            ])
         }
     }
 
@@ -487,11 +501,22 @@ public final class Repository {
 
     // MARK: - Activity
 
+    /// Deliberately transaction-free, exactly like `addLabel`: `createTask`,
+    /// `updateTask`, `submitForReview`, `applyVerdict`, etc. call this from
+    /// inside their own `db.transaction`, and `db.transaction` (`BEGIN
+    /// IMMEDIATE`) is not reentrant.
     @discardableResult
     public func logActivity(taskId: Int64, actor: String, kind: String, message: String) throws -> Int64 {
-        try db.execute("INSERT INTO activity (task_id, actor, kind, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                       [.integer(taskId), .text(actor), .text(kind), .text(message), .text(now())])
-        return db.lastInsertRowId
+        let uuid = UUID().uuidString
+        try db.execute("INSERT INTO activity (task_id, actor, kind, message, created_at, uuid) VALUES (?, ?, ?, ?, ?, ?)",
+                       [.integer(taskId), .text(actor), .text(kind), .text(message), .text(now()), .text(uuid)])
+        let activityId = db.lastInsertRowId
+        if let projectId = try projectId(forTask: taskId), let taskUUID = try entityUUID(.task, id: taskId) {
+            try recordInsert(.activity, uuid: uuid, projectId: projectId, parentUUID: taskUUID, fields: [
+                ("actor", .text(actor)), ("kind", .text(kind)), ("message", .text(message))
+            ])
+        }
+        return activityId
     }
 
     // MARK: - Documents
@@ -511,23 +536,44 @@ public final class Repository {
     @discardableResult
     public func attachDocument(taskId: Int64?, projectId: Int64?, path: String, title: String?,
                                kind: DocumentKind = .note) throws -> Int64 {
-        let expanded = (path as NSString).expandingTildeInPath
-        let resolvedTitle = title ?? (expanded as NSString).lastPathComponent
-        try db.execute("""
-            INSERT INTO documents (task_id, project_id, path, title, created_at, kind, round, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-            """,
-            [taskId.map { .integer($0) } ?? .null,
-             projectId.map { .integer($0) } ?? .null,
-             .text(expanded), .text(resolvedTitle), .text(now()), .text(kind.rawValue), .text(now())])
-        if let taskId {
-            try logActivity(taskId: taskId, actor: "claude", kind: "note", message: "attached document \(resolvedTitle)")
+        try db.transaction {
+            let expanded = (path as NSString).expandingTildeInPath
+            let resolvedTitle = title ?? (expanded as NSString).lastPathComponent
+            let uuid = UUID().uuidString
+            try db.execute("""
+                INSERT INTO documents (task_id, project_id, path, title, created_at, kind, round, updated_at, uuid)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                [taskId.map { .integer($0) } ?? .null, projectId.map { .integer($0) } ?? .null,
+                 .text(expanded), .text(resolvedTitle), .text(now()), .text(kind.rawValue), .text(now()), .text(uuid)])
+            let docId = db.lastInsertRowId
+            if let taskId {
+                try logActivity(taskId: taskId, actor: "claude", kind: "note", message: "attached document \(resolvedTitle)")
+            }
+            if let owningProject = try self.projectId(forDocument: docId),
+               let parentUUID = try documentParentUUID(taskId: taskId, projectId: projectId) {
+                try recordInsert(.document, uuid: uuid, projectId: owningProject, parentUUID: parentUUID, fields: [
+                    ("title", .text(resolvedTitle)), ("kind", .text(kind.rawValue)), ("round", .integer(1))
+                ])
+            }
+            return docId
         }
-        return db.lastInsertRowId
+    }
+
+    /// A document's parent is its task (if any), else its project.
+    private func documentParentUUID(taskId: Int64?, projectId: Int64?) throws -> String? {
+        if let taskId { return try entityUUID(.task, id: taskId) }
+        if let projectId { return try entityUUID(.project, id: projectId) }
+        return nil
     }
 
     public func removeDocument(id: Int64) throws {
-        try db.execute("DELETE FROM documents WHERE id = ?", [.integer(id)])
+        try db.transaction {
+            if let uuid = try entityUUID(.document, id: id), let projectId = try self.projectId(forDocument: id) {
+                try recordDelete(.document, uuid: uuid, projectId: projectId)
+            }
+            try db.execute("DELETE FROM documents WHERE id = ?", [.integer(id)])
+        }
     }
 
     public func documents(projectId: Int64) throws -> [LinkedDocument] {
@@ -544,6 +590,10 @@ public final class Repository {
     private func setAttentionColumn(taskId: Int64, _ value: String?) throws {
         try db.execute("UPDATE tasks SET attention = ?, updated_at = ? WHERE id = ?",
                        [value.map { .text($0) } ?? .null, .text(now()), .integer(taskId)])
+        if let uuid = try entityUUID(.task, id: taskId), let projectId = try projectId(forTask: taskId) {
+            try recordUpdate(.task, uuid: uuid, projectId: projectId,
+                             field: "attention", value: value.map { .text($0) } ?? .null)
+        }
     }
 
     public func setAttention(taskId: Int64, attention: TaskAttention?, actor: String = "claude") throws {
@@ -578,15 +628,26 @@ public final class Repository {
                      .text(now()), .integer(docId)])
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
                                 message: "resubmitted “\(resolvedTitle)” for review (round \(newRound))")
+                if let uuid = try entityUUID(.document, id: docId), let projectId = try projectId(forDocument: docId) {
+                    try recordUpdate(.document, uuid: uuid, projectId: projectId, field: "state", value: .text("needs_review"))
+                    try recordUpdate(.document, uuid: uuid, projectId: projectId, field: "round", value: .integer(newRound))
+                }
             } else {
+                let uuid = UUID().uuidString
                 try db.execute("""
-                    INSERT INTO documents (task_id, project_id, path, title, created_at, kind, state, round, updated_at)
-                    VALUES (?, NULL, ?, ?, ?, 'proposal', 'needs_review', 1, ?)
+                    INSERT INTO documents (task_id, project_id, path, title, created_at, kind, state, round, updated_at, uuid)
+                    VALUES (?, NULL, ?, ?, ?, 'proposal', 'needs_review', 1, ?, ?)
                     """,
-                    [.integer(taskId), .text(expanded), .text(resolvedTitle), .text(now()), .text(now())])
+                    [.integer(taskId), .text(expanded), .text(resolvedTitle), .text(now()), .text(now()), .text(uuid)])
                 docId = db.lastInsertRowId
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
                                 message: "submitted “\(resolvedTitle)” for review")
+                if let projectId = try projectId(forDocument: docId), let taskUUID = try entityUUID(.task, id: taskId) {
+                    try recordInsert(.document, uuid: uuid, projectId: projectId, parentUUID: taskUUID, fields: [
+                        ("title", .text(resolvedTitle)), ("kind", .text("proposal")),
+                        ("state", .text("needs_review")), ("round", .integer(1))
+                    ])
+                }
             }
             try db.execute("""
                 UPDATE documents SET state = 'superseded', updated_at = ?
@@ -602,6 +663,9 @@ public final class Repository {
     private func setDocumentState(_ state: DocumentState, id: Int64) throws {
         try db.execute("UPDATE documents SET state = ?, updated_at = ? WHERE id = ?",
                        [.text(state.rawValue), .text(now()), .integer(id)])
+        if let uuid = try entityUUID(.document, id: id), let projectId = try projectId(forDocument: id) {
+            try recordUpdate(.document, uuid: uuid, projectId: projectId, field: "state", value: .text(state.rawValue))
+        }
     }
 
     // MARK: Annotations
@@ -615,22 +679,42 @@ public final class Repository {
         guard let doc = try document(id: documentId) else {
             throw RepositoryError.notFound("document \(documentId)")
         }
-        try db.execute("""
-            INSERT INTO annotations (document_id, round, quote, prefix, suffix, comment, author, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [.integer(documentId), .integer(Int64(doc.round)), .text(quote), .text(prefix),
-             .text(suffix), .text(comment), .text(author), .text(now())])
-        return db.lastInsertRowId
+        return try db.transaction {
+            let uuid = UUID().uuidString
+            try db.execute("""
+                INSERT INTO annotations (document_id, round, quote, prefix, suffix, comment, author, created_at, uuid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [.integer(documentId), .integer(Int64(doc.round)), .text(quote), .text(prefix),
+                 .text(suffix), .text(comment), .text(author), .text(now()), .text(uuid)])
+            let annId = db.lastInsertRowId
+            if let projectId = try projectId(forDocument: documentId), let docUUID = try entityUUID(.document, id: documentId) {
+                try recordInsert(.annotation, uuid: uuid, projectId: projectId, parentUUID: docUUID, fields: [
+                    ("round", .integer(Int64(doc.round))), ("quote", .text(quote)),
+                    ("prefix", .text(prefix)), ("suffix", .text(suffix)),
+                    ("comment", .text(comment)), ("author", .text(author)), ("state", .text("open"))
+                ])
+            }
+            return annId
+        }
     }
 
     public func updateAnnotation(id: Int64, comment: String) throws {
-        try db.execute("UPDATE annotations SET comment = ? WHERE id = ?",
-                       [.text(comment), .integer(id)])
+        try db.transaction {
+            try db.execute("UPDATE annotations SET comment = ? WHERE id = ?", [.text(comment), .integer(id)])
+            if let uuid = try entityUUID(.annotation, id: id), let projectId = try projectId(forAnnotation: id) {
+                try recordUpdate(.annotation, uuid: uuid, projectId: projectId, field: "comment", value: .text(comment))
+            }
+        }
     }
 
     public func deleteAnnotation(id: Int64) throws {
-        try db.execute("DELETE FROM annotations WHERE id = ?", [.integer(id)])
+        try db.transaction {
+            if let uuid = try entityUUID(.annotation, id: id), let projectId = try projectId(forAnnotation: id) {
+                try recordDelete(.annotation, uuid: uuid, projectId: projectId)
+            }
+            try db.execute("DELETE FROM annotations WHERE id = ?", [.integer(id)])
+        }
     }
 
     public func annotations(documentId: Int64) throws -> [Annotation] {
@@ -658,6 +742,10 @@ public final class Repository {
             if let doc = try document(id: documentId), let taskId = doc.taskId {
                 try logActivity(taskId: taskId, actor: actor, kind: "review",
                                 message: "addressed a review comment on “\(doc.title)”")
+            }
+            if let uuid = try entityUUID(.annotation, id: id), let projectId = try projectId(forAnnotation: id) {
+                try recordUpdate(.annotation, uuid: uuid, projectId: projectId, field: "state", value: .text("addressed"))
+                try recordUpdate(.annotation, uuid: uuid, projectId: projectId, field: "reply", value: .text(reply))
             }
         }
     }
@@ -697,6 +785,9 @@ public final class Repository {
                 if task.status != .todo {
                     try db.execute("UPDATE tasks SET status = 'todo', updated_at = ? WHERE id = ?",
                                    [.text(now()), .integer(taskId)])
+                    if let uuid = try entityUUID(.task, id: taskId), let projectId = try projectId(forTask: taskId) {
+                        try recordUpdate(.task, uuid: uuid, projectId: projectId, field: "status", value: .text("todo"))
+                    }
                     try logActivity(taskId: taskId, actor: actor, kind: "status",
                                     message: "moved from \(task.status.displayName) to \(TaskStatus.todo.displayName)")
                 }
@@ -889,6 +980,21 @@ public final class Repository {
     /// only carry a task id) can be recorded under the right project.
     func projectId(forTask taskId: Int64) throws -> Int64? {
         try db.query("SELECT project_id FROM tasks WHERE id = ?", [.integer(taskId)]).first?.intOrNil("project_id")
+    }
+
+    /// Documents belong to a project directly (`project_id`) or through a task (`task_id`).
+    func projectId(forDocument documentId: Int64) throws -> Int64? {
+        guard let row = try db.query("SELECT task_id, project_id FROM documents WHERE id = ?",
+                                     [.integer(documentId)]).first else { return nil }
+        if let direct = row.intOrNil("project_id") { return direct }
+        if let taskId = row.intOrNil("task_id") { return try projectId(forTask: taskId) }
+        return nil
+    }
+
+    func projectId(forAnnotation annotationId: Int64) throws -> Int64? {
+        guard let docId = try db.query("SELECT document_id FROM annotations WHERE id = ?",
+                                       [.integer(annotationId)]).first?.int("document_id") else { return nil }
+        return try projectId(forDocument: docId)
     }
 
     func entityUUID(_ entity: SyncEntity, id: Int64) throws -> String? {
