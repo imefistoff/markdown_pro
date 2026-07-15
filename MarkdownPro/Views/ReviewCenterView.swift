@@ -36,10 +36,16 @@ struct ReviewCenterView: View {
                 Text(item.document.title)
                     .font(.callout)
                     .lineLimit(2)
+                    // Without fixedSize, a List row can propose a 1-line height
+                    // and clip a 2-line title mid-word; this pins the full height.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(item.document.title)
                 Text(item.taskTitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(item.taskTitle)
                 HStack(spacing: 6) {
                     Text(item.projectName)
                         .font(.caption2)
