@@ -32,4 +32,16 @@ final class GitHubAPITests: XCTestCase {
         FakeGitHubServer.repoExists = false
         XCTAssertFalse(try api().getRepoExists())
     }
+
+    func testUnauthorizedStatusThrows() {
+        for code in [401, 403] {
+            FakeGitHubServer.forceStatus = code
+            XCTAssertThrowsError(try api().getRepoExists()) { err in
+                guard case GitHubError.unauthorized = err else {
+                    return XCTFail("expected .unauthorized for HTTP \(code), got \(err)")
+                }
+            }
+            FakeGitHubServer.forceStatus = nil
+        }
+    }
 }
