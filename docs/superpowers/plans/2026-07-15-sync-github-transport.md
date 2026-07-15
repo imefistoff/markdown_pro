@@ -728,7 +728,10 @@ Replace `loadSyncFolder()` (the whole method) with a general `loadSyncEngine()`:
 ```swift
     private func loadSyncEngine() {
         guard let repo else { return }
+        // Backward compatibility: a user who configured folder sync before this
+        // change has syncFolderKey set but no syncTransportKey — treat as folder.
         let type = UserDefaults.standard.string(forKey: syncTransportKey)
+            ?? (UserDefaults.standard.string(forKey: syncFolderKey).map { _ in "folder" })
         do {
             let deviceId = try repo.syncState().deviceId
             switch type {
