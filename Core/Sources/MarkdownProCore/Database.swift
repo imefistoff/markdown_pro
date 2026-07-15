@@ -154,8 +154,9 @@ public enum Database {
                 // Cross-machine identity. SQLite cannot ALTER-ADD a UNIQUE
                 // NOT NULL column, so we add a plain TEXT column, backfill a
                 // UUID into every existing row, then enforce uniqueness with an
-                // index. NOT NULL is upheld in Swift (Repository always sets it),
-                // matching the v2 decision to validate vocabulary outside SQL.
+                // index. NOT NULL is validated in Swift in create/record paths
+                // (createProject, createTask stamp UUIDs; other paths being
+                // updated in later tasks). The UNIQUE index enforces distinctness.
                 let uuidTables = ["projects", "tasks", "subtasks", "labels",
                                   "documents", "annotations", "activity"]
                 for table in uuidTables {
