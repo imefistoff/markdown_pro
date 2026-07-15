@@ -128,3 +128,33 @@ Task 4 of the review-center plan for the JSON-RPC lines).
 - [ ] A task carrying review state (proposal doc, annotations, attention chip)
       exports and imports without error — review state is **not** carried by the
       bundle, so the imported copy comes back clean.
+
+## §10 Launch (Claude Code from Review)
+
+Setup: scratch DB (`MARKDOWNPRO_DB=/tmp/qa-launch.sqlite`), one project. Right-click
+the project → **Project Settings…** → set the repo path to a real git repo.
+
+- [ ] With no repo path, an approved spec/plan shows a **Set repo path…** button
+      that opens Project Settings; setting a path turns it into a green **Launch**.
+- [ ] Submitting `kind=spec` via `submit_for_review` puts the doc in Review; the
+      queue row and document render as before.
+- [ ] Approving the spec arms **Launch** on the card and in task detail; approving
+      a plain `proposal` arms **no** Launch button.
+- [ ] Launch opens a sheet showing the exact script: `cd '<repo>'`, a quoted
+      `<<'MDPRO_PROMPT_EOF'` heredoc carrying the prompt, and the `exec claude` line.
+- [ ] A spec launch has **no** `-w` and `--permission-mode plan`; a plan launch with
+      the worktree toggle on has `-w 'task-N-…'` and the project's preset.
+- [ ] With an unsafe preset (auto/dontAsk/bypassPermissions) on a plan launch, the
+      sheet shows a red warning band and Return does **not** trigger Run.
+- [ ] **Copy** puts the script on the clipboard; pasting into a terminal and running
+      it starts the session.
+- [ ] **Run** opens a new Warp window in the repo dir running `claude`; the task chip
+      flips to **Executing** and the activity log shows a `launch` entry (You).
+- [ ] With Warp not installed, Run is replaced by "Warp not found — copy and run
+      manually" and Copy still works.
+- [ ] If the approved document is deleted from disk, the sheet still opens but Run is
+      disabled with a "no longer exists" note.
+- [ ] A task stuck **Executing** (session killed) can be cleared via the **Clear**
+      button next to the chip in task detail.
+- [ ] Editing a project template then **Reset to default** restores the built-in
+      prompt and removes the override (relaunch shows the default in the sheet).
