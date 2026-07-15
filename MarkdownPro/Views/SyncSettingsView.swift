@@ -42,6 +42,7 @@ struct SyncSettingsView: View {
             Spacer()
         }
         .padding(20).frame(width: 460, height: 400).textFieldStyle(.roundedBorder)
+        .onAppear { store.refreshAdoptable() }
     }
 
     private func connect() {

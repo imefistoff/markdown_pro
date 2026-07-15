@@ -69,8 +69,13 @@ public struct GitHubAPI {
         guard code == 200 else { throw GitHubError.http(code, String(data: data, encoding: .utf8) ?? "") }
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let b64 = obj["content"] as? String,
-              let sha = obj["sha"] as? String,
-              let decoded = Data(base64Encoded: b64.replacingOccurrences(of: "\n", with: "")) else {
+              let sha = obj["sha"] as? String else {
+            throw GitHubError.malformed("contents \(path)")
+        }
+        guard obj["encoding"] as? String == "base64" else {
+            throw GitHubError.malformed("unexpected encoding for \(path)")
+        }
+        guard let decoded = Data(base64Encoded: b64.replacingOccurrences(of: "\n", with: "")) else {
             throw GitHubError.malformed("contents \(path)")
         }
         return (decoded, sha)

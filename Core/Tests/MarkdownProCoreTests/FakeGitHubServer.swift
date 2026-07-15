@@ -60,7 +60,7 @@ final class FakeGitHubURLProtocol: URLProtocol {
                     return finishJSON(200, arr)
                 }
                 let data = FakeGitHubServer.files[repoPath]!
-                return finishJSON(200, ["content": data.base64EncodedString(), "sha": sha(repoPath)])
+                return finishJSON(200, ["content": data.base64EncodedString(), "sha": sha(repoPath), "encoding": "base64"])
             case "PUT":
                 let body = (try? JSONSerialization.jsonObject(with: request.httpBodyData())) as? [String: Any]
                 let b64 = body?["content"] as? String ?? ""

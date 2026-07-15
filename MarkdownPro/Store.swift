@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Security
 import MarkdownProCore
 
 /// Single source of truth for the UI. Wraps the shared Repository and
@@ -182,16 +183,19 @@ final class Store: ObservableObject {
         } catch {
             return "Could not verify: \(error)"
         }
+        guard KeychainTokenStore.save(token) == errSecSuccess else {
+            return "Could not store the token in the Keychain."
+        }
         let switching = UserDefaults.standard.string(forKey: syncTransportKey) != "github"
             || UserDefaults.standard.string(forKey: ghOwnerKey) != owner
             || UserDefaults.standard.string(forKey: ghRepoKey) != repo
-        KeychainTokenStore.save(token)
         UserDefaults.standard.set("github", forKey: syncTransportKey)
         UserDefaults.standard.set(owner, forKey: ghOwnerKey)
         UserDefaults.standard.set(repo, forKey: ghRepoKey)
         if switching { perform { try $0.resetSyncCursors() } }
         loadSyncEngine()
         syncNow()
+        refreshAdoptable()
         return nil
     }
 
@@ -213,12 +217,20 @@ final class Store: ObservableObject {
     func adopt(_ project: SyncEngine.AdoptableProject) {
         perform { try $0.adoptProject(remoteUUID: project.uuid, name: project.name) }
         syncNow()
+        refreshAdoptable()
     }
 
-    /// Snapshot of the last-known adoption catalog. Refreshed after every sync;
-    /// see the `adoptable` published property for the live value views should bind to.
+    /// Snapshot of the last-known adoption catalog. Only recomputed by
+    /// `refreshAdoptable()`; see the `adoptable` published property for the
+    /// live value views should bind to.
     func availableToAdopt() -> [SyncEngine.AdoptableProject] {
         adoptable
+    }
+
+    /// Recomputes the adoption catalog (a full transport read — expensive over GitHub).
+    /// Call only when the sync settings UI is visible or right after a connect/adopt.
+    func refreshAdoptable() {
+        adoptable = (try? syncEngine?.availableToAdopt()) ?? []
     }
 
     /// Runs a sync synchronously on the main actor. Store is @MainActor and the
@@ -234,7 +246,6 @@ final class Store: ObservableObject {
             errorMessage = "Sync failed: \(error)"
         }
         refresh()
-        adoptable = (try? syncEngine.availableToAdopt()) ?? []
     }
 
     private func scheduleDebouncedSync() {

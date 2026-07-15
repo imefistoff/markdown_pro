@@ -7,7 +7,8 @@ enum KeychainTokenStore {
     private static let service = "com.markdownpro.sync.github"
     private static let account = "github-token"
 
-    static func save(_ token: String) {
+    @discardableResult
+    static func save(_ token: String) -> OSStatus {
         delete()
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -16,7 +17,7 @@ enum KeychainTokenStore {
             kSecValueData as String: Data(token.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
-        SecItemAdd(query as CFDictionary, nil)
+        return SecItemAdd(query as CFDictionary, nil)
     }
 
     static func load() -> String? {
