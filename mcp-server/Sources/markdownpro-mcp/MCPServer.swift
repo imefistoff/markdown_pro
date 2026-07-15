@@ -137,7 +137,7 @@ final class MCPServer {
             var dict = Encode.taskDetail(detail)
             dict["linked_documents"] = try detail.documents.map { doc -> [String: Any] in
                 var d = Encode.document(doc)
-                if doc.kind == .proposal {
+                if doc.kind.isReviewable {
                     d["open_annotations"] = try repo.annotations(documentId: doc.id)
                         .filter { $0.state == .open }.count
                 }
@@ -215,8 +215,8 @@ final class MCPServer {
             }
             var kind = DocumentKind.note
             if let raw = string(args, "kind") {
-                guard let parsed = DocumentKind(rawValue: raw), parsed != .proposal else {
-                    throw ToolError.badArgument("kind must be note or wiki (proposals go through submit_for_review)")
+                guard let parsed = DocumentKind(rawValue: raw), !parsed.isReviewable else {
+                    throw ToolError.badArgument("kind must be note or wiki (proposals/specs/plans go through submit_for_review)")
                 }
                 kind = parsed
             }
@@ -239,9 +239,18 @@ final class MCPServer {
                 throw ToolError.badArgument("file does not exist: \(expanded)")
             }
             guard try repo.getTask(id: taskId) != nil else { throw ToolError.notFound("task \(taskId)") }
-            let docId = try repo.submitForReview(taskId: taskId, path: expanded, title: string(args, "title"))
+            var kind = DocumentKind.proposal
+            if let raw = string(args, "kind") {
+                guard let parsed = DocumentKind(rawValue: raw), parsed.isReviewable else {
+                    throw ToolError.badArgument("kind must be one of proposal|spec|plan")
+                }
+                kind = parsed
+            }
+            let docId = try repo.submitForReview(taskId: taskId, path: expanded,
+                                                 title: string(args, "title"), kind: kind)
             guard let doc = try repo.document(id: docId) else { throw ToolError.notFound("document \(docId)") }
             return jsonText(["document_id": docId, "state": "needs_review", "round": doc.round,
+                             "kind": doc.kind.rawValue,
                              "message": "Submitted “\(doc.title)” for review (round \(doc.round))"])
 
         case "get_review_feedback":

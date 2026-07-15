@@ -142,13 +142,16 @@ enum ToolCatalog {
              required: ["task_id", "name"]),
 
         tool("submit_for_review",
-             "Submit a markdown proposal for the user's review. Registers the file as a proposal " +
-             "on the task, flags the task needs_review, and puts it in the app's Review queue. " +
+             "Submit a markdown document for the user's review. Registers the file on the task, " +
+             "flags the task needs_review, and puts it in the app's Review queue. Use kind=spec for a " +
+             "design/spec, kind=plan for an implementation plan, or the default proposal otherwise. " +
              "Resubmitting the same file after addressing feedback starts a new round.",
              properties: [
-                "task_id": ["type": "integer", "description": "Task the proposal belongs to"],
+                "task_id": ["type": "integer", "description": "Task the document belongs to"],
                 "path": ["type": "string", "description": "Absolute path to the .md file (must exist)"],
-                "title": ["type": "string", "description": "Display title (defaults to file name)"]
+                "title": ["type": "string", "description": "Display title (defaults to file name)"],
+                "kind": ["type": "string", "enum": ["proposal", "spec", "plan"],
+                         "description": "Review stage (default proposal). Only spec and plan arm a Launch button."]
              ],
              required: ["task_id", "path"]),
 
