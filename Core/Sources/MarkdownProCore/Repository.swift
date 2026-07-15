@@ -15,7 +15,7 @@ public final class Repository {
     /// Lazily bootstrapped so `init(db:)` stays unchanged for the app, the MCP
     /// server, and tests. First mutation of a synced project pays the cost.
     /// Public so the app layer can read `deviceId` when constructing a
-    /// `FolderTransport` for `SyncEngine` (Task 15).
+    /// `GitHubTransport` for `SyncEngine` (Task 15).
     public func syncState() throws -> SyncState {
         if let s = _sync { return s }
         let s = try SyncState(db: db)

@@ -5,6 +5,7 @@ final class SyncDocumentTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        FakeGitHubServer.reset()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sync-managed-\(UUID().uuidString)")
         setenv("MARKDOWNPRO_SYNC_ROOT", dir.path, 1)
     }
@@ -16,14 +17,13 @@ final class SyncDocumentTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makePair() throws -> (a: TestDatabase, b: TestDatabase, ea: SyncEngine, eb: SyncEngine, folder: URL) {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("docsync-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    private func makePair() throws -> (a: TestDatabase, b: TestDatabase, ea: SyncEngine, eb: SyncEngine) {
         let a = try TestDatabase(), b = try TestDatabase()
         return (a, b,
-                SyncEngine(repo: a.repo, transport: FolderTransport(root: folder, deviceId: try a.repo.syncState().deviceId)),
-                SyncEngine(repo: b.repo, transport: FolderTransport(root: folder, deviceId: try b.repo.syncState().deviceId)),
-                folder)
+                SyncEngine(repo: a.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+                    deviceId: try a.repo.syncState().deviceId, session: FakeGitHubServer.session())),
+                SyncEngine(repo: b.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+                    deviceId: try b.repo.syncState().deviceId, session: FakeGitHubServer.session())))
     }
 
     func testDocumentContentTravelsAsBlobAndRestoresManagedCopy() throws {
