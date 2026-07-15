@@ -15,7 +15,7 @@ public final class Repository {
     /// Lazily bootstrapped so `init(db:)` stays unchanged for the app, the MCP
     /// server, and tests. First mutation of a synced project pays the cost.
     /// Public so the app layer can read `deviceId` when constructing a
-    /// `FolderTransport` for `SyncEngine` (Task 15).
+    /// `GitHubTransport` for `SyncEngine` (Task 15).
     public func syncState() throws -> SyncState {
         if let s = _sync { return s }
         let s = try SyncState(db: db)
@@ -1315,6 +1315,13 @@ public final class Repository {
             try db.execute("UPDATE sync_devices SET cursor = ? WHERE device_id = ? AND is_self = 0",
                            [.integer(Int64(cursor)), .text(device)])
         }
+    }
+
+    /// Zeroes every sync cursor (self publish cursor + all remote cursors) so a
+    /// newly-selected transport target is seeded from the full local op log and
+    /// re-reads every remote batch. Safe because replay is idempotent.
+    public func resetSyncCursors() throws {
+        try db.execute("UPDATE sync_devices SET cursor = 0")
     }
 
     public func upsertRemoteDevices(_ devices: [SyncDevice]) throws {

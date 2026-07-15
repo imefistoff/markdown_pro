@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Security
 import MarkdownProCore
 
 /// Single source of truth for the UI. Wraps the shared Repository and
@@ -52,13 +53,14 @@ final class Store: ObservableObject {
     private var lastDataVersion: Int64 = 0
     private var timer: Timer?
 
-    /// The folder both Macs point at (Dropbox/Syncthing/etc.). Persisted.
-    @Published private(set) var syncFolderPath: String?
     @Published private(set) var adoptable: [SyncEngine.AdoptableProject] = []
     private var syncEngine: SyncEngine?
     private var syncDebounce: Timer?
     private var isSyncing = false
-    private let syncFolderKey = "MarkdownProSyncFolder"
+    private let syncTransportKey = "MarkdownProSyncTransport"   // "github"
+    private let ghOwnerKey = "MarkdownProGitHubOwner"
+    private let ghRepoKey = "MarkdownProGitHubRepo"
+    @Published private(set) var syncTargetLabel: String?
 
     init() {
         do {
@@ -78,7 +80,7 @@ final class Store: ObservableObject {
                 self?.pollForExternalChanges()
             }
         }
-        loadSyncFolder()
+        loadSyncEngine()
         syncNow() // launch
         // Sync is synchronous on the main actor (see `syncNow()`), so the quit
         // hook can just call it directly and let the app terminate right after.
@@ -153,22 +155,58 @@ final class Store: ObservableObject {
 
     // MARK: - Sync
 
-    private func loadSyncFolder() {
+    private func loadSyncEngine() {
         guard let repo,
-              let path = UserDefaults.standard.string(forKey: syncFolderKey), !path.isEmpty else { return }
-        syncFolderPath = path
+              UserDefaults.standard.string(forKey: syncTransportKey) == "github",
+              let owner = UserDefaults.standard.string(forKey: ghOwnerKey),
+              let name = UserDefaults.standard.string(forKey: ghRepoKey),
+              let token = KeychainTokenStore.load() else { syncEngine = nil; return }
         do {
             let deviceId = try repo.syncState().deviceId
-            syncEngine = SyncEngine(repo: repo, transport: FolderTransport(root: URL(fileURLWithPath: path), deviceId: deviceId))
+            syncTargetLabel = "GitHub: \(owner)/\(name)"
+            syncEngine = SyncEngine(repo: repo, transport:
+                GitHubTransport(owner: owner, repo: name, token: token, deviceId: deviceId))
         } catch {
             errorMessage = "Could not start sync: \(error)"
         }
     }
 
-    func setSyncFolder(_ url: URL) {
-        UserDefaults.standard.set(url.path, forKey: syncFolderKey)
-        loadSyncFolder()
+    /// Verifies access, stores the token in the Keychain, switches the target to
+    /// GitHub, and syncs. Returns nil on success or a user-facing error message.
+    @discardableResult
+    func connectGitHub(owner: String, repo: String, token: String) -> String? {
+        guard let store = self.repo else { return "No database" }
+        do {
+            let deviceId = try store.syncState().deviceId
+            let probe = GitHubTransport(owner: owner, repo: repo, token: token, deviceId: deviceId)
+            guard try probe.verifyAccess() else { return "Repo \(owner)/\(repo) not found or no access." }
+        } catch {
+            return "Could not verify: \(error)"
+        }
+        guard KeychainTokenStore.save(token) == errSecSuccess else {
+            return "Could not store the token in the Keychain."
+        }
+        let switching = UserDefaults.standard.string(forKey: syncTransportKey) != "github"
+            || UserDefaults.standard.string(forKey: ghOwnerKey) != owner
+            || UserDefaults.standard.string(forKey: ghRepoKey) != repo
+        UserDefaults.standard.set("github", forKey: syncTransportKey)
+        UserDefaults.standard.set(owner, forKey: ghOwnerKey)
+        UserDefaults.standard.set(repo, forKey: ghRepoKey)
+        if switching { perform { try $0.resetSyncCursors() } }
+        loadSyncEngine()
         syncNow()
+        refreshAdoptable()
+        return nil
+    }
+
+    func disconnectSync() {
+        KeychainTokenStore.delete()
+        UserDefaults.standard.removeObject(forKey: syncTransportKey)
+        UserDefaults.standard.removeObject(forKey: ghOwnerKey)
+        UserDefaults.standard.removeObject(forKey: ghRepoKey)
+        syncEngine = nil
+        syncTargetLabel = nil
+        adoptable = []
     }
 
     func setProjectSynced(id: Int64, synced: Bool) {
@@ -179,12 +217,20 @@ final class Store: ObservableObject {
     func adopt(_ project: SyncEngine.AdoptableProject) {
         perform { try $0.adoptProject(remoteUUID: project.uuid, name: project.name) }
         syncNow()
+        refreshAdoptable()
     }
 
-    /// Snapshot of the last-known adoption catalog. Refreshed after every sync;
-    /// see the `adoptable` published property for the live value views should bind to.
+    /// Snapshot of the last-known adoption catalog. Only recomputed by
+    /// `refreshAdoptable()`; see the `adoptable` published property for the
+    /// live value views should bind to.
     func availableToAdopt() -> [SyncEngine.AdoptableProject] {
         adoptable
+    }
+
+    /// Recomputes the adoption catalog (a full transport read — expensive over GitHub).
+    /// Call only when the sync settings UI is visible or right after a connect/adopt.
+    func refreshAdoptable() {
+        adoptable = (try? syncEngine?.availableToAdopt()) ?? []
     }
 
     /// Runs a sync synchronously on the main actor. Store is @MainActor and the
@@ -200,7 +246,6 @@ final class Store: ObservableObject {
             errorMessage = "Sync failed: \(error)"
         }
         refresh()
-        adoptable = (try? syncEngine.availableToAdopt()) ?? []
     }
 
     private func scheduleDebouncedSync() {

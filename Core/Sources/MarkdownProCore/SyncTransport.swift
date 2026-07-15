@@ -8,7 +8,8 @@ public enum SyncHash {
     }
 }
 
-/// The seam Spec B (GitHub) will swap. Spec A ships `FolderTransport`.
+/// The seam `SyncEngine` is built against; `GitHubTransport` is the shipping
+/// implementation.
 public protocol SyncTransport {
     /// Remote device logs (excluding our own) beyond the given per-device cursor.
     func fetch(since cursors: [String: Int]) throws -> RemoteChanges

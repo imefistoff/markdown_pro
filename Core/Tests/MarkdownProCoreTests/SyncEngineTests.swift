@@ -3,20 +3,21 @@ import XCTest
 
 final class SyncEngineTests: XCTestCase {
 
-    /// Two independent databases sharing one transport folder.
+    override func setUp() { super.setUp(); FakeGitHubServer.reset() }
+
+    /// Two independent databases sharing one transport (a fake GitHub repo).
     private struct Pair {
         let a: TestDatabase, b: TestDatabase
         let engineA: SyncEngine, engineB: SyncEngine
-        let folder: URL
     }
 
     private func makePair() throws -> Pair {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("engine-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let a = try TestDatabase(), b = try TestDatabase()
-        let engineA = SyncEngine(repo: a.repo, transport: FolderTransport(root: folder, deviceId: try a.repo.syncState().deviceId))
-        let engineB = SyncEngine(repo: b.repo, transport: FolderTransport(root: folder, deviceId: try b.repo.syncState().deviceId))
-        return Pair(a: a, b: b, engineA: engineA, engineB: engineB, folder: folder)
+        let engineA = SyncEngine(repo: a.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+            deviceId: try a.repo.syncState().deviceId, session: FakeGitHubServer.session()))
+        let engineB = SyncEngine(repo: b.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+            deviceId: try b.repo.syncState().deviceId, session: FakeGitHubServer.session()))
+        return Pair(a: a, b: b, engineA: engineA, engineB: engineB)
     }
 
     func testConvergenceAToB() throws {
@@ -76,11 +77,11 @@ final class SyncEngineTests: XCTestCase {
 
     func testHLCCausalityRemoteEditWins() throws {
         // A's wall clock is far behind B's, but A edits AFTER seeing B's change.
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("causal-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let a = try TestDatabase(), b = try TestDatabase()
-        let engineA = SyncEngine(repo: a.repo, transport: FolderTransport(root: folder, deviceId: try a.repo.syncState().deviceId))
-        let engineB = SyncEngine(repo: b.repo, transport: FolderTransport(root: folder, deviceId: try b.repo.syncState().deviceId))
+        let engineA = SyncEngine(repo: a.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+            deviceId: try a.repo.syncState().deviceId, session: FakeGitHubServer.session()))
+        let engineB = SyncEngine(repo: b.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+            deviceId: try b.repo.syncState().deviceId, session: FakeGitHubServer.session()))
 
         let projectId = try b.repo.createProject(name: "Shared")
         try b.repo.setProjectSynced(id: projectId, synced: true)
@@ -118,17 +119,17 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(try p.b.repo.listTasks().map(\.title), ["Ship it"])
     }
 
-    func testContainmentUnsyncedProjectNeverReachesFolder() throws {
+    func testContainmentUnsyncedProjectNeverReachesTransport() throws {
         let p = try makePair()
         let projectId = try p.a.repo.createProject(name: "Private") // not synced
         try p.a.repo.createTask(projectId: projectId, title: "secret")
         try p.engineA.sync()
 
-        let opsDir = p.folder.appendingPathComponent("ops")
-        let logs = (try? FileManager.default.contentsOfDirectory(at: opsDir, includingPropertiesForKeys: nil)) ?? []
-        for log in logs {
-            let contents = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
-            XCTAssertFalse(contents.contains("secret"), "an unsynced project must never reach the transport")
+        XCTAssertFalse(FakeGitHubServer.files.keys.contains { $0.hasPrefix("ops/") },
+                        "an unsynced project must never reach the transport")
+        for (path, data) in FakeGitHubServer.files {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            XCTAssertFalse(text.contains("secret"), "\(path) must not contain the unsynced project's data")
         }
     }
 
@@ -153,5 +154,19 @@ final class SyncEngineTests: XCTestCase {
         let bBetaId = try p.b.repo.db.query("SELECT id FROM projects WHERE uuid = ?", [.text(projBUUID)]).first!.int("id")
         let bTaskProject = try p.b.repo.db.query("SELECT project_id FROM tasks WHERE uuid = ?", [.text(taskUUID)]).first?.intOrNil("project_id")
         XCTAssertEqual(bTaskProject, bBetaId, "a cross-project move must land the task under the peer's matching project")
+    }
+
+    func testResetSyncCursorsZeroesSelfAndRemote() throws {
+        let tdb = try TestDatabase()
+        _ = try tdb.repo.syncState()   // ensures the self device row exists
+        try tdb.repo.db.execute("UPDATE sync_devices SET cursor = 7 WHERE is_self = 1")
+        try tdb.repo.db.execute("""
+            INSERT INTO sync_devices (device_id, name, is_self, cursor) VALUES ('remote', 'R', 0, 9)
+            """)
+
+        try tdb.repo.resetSyncCursors()
+
+        let cursors = try tdb.repo.db.query("SELECT cursor FROM sync_devices").map { $0.int("cursor") }
+        XCTAssertEqual(cursors, [0, 0], "all cursors reset to 0")
     }
 }

@@ -3,13 +3,15 @@ import XCTest
 
 final class SyncAdoptionTests: XCTestCase {
 
+    override func setUp() { super.setUp(); FakeGitHubServer.reset() }
+
     private func makePair() throws -> (a: TestDatabase, b: TestDatabase, ea: SyncEngine, eb: SyncEngine) {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("adopt-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let a = try TestDatabase(), b = try TestDatabase()
         return (a, b,
-                SyncEngine(repo: a.repo, transport: FolderTransport(root: folder, deviceId: try a.repo.syncState().deviceId)),
-                SyncEngine(repo: b.repo, transport: FolderTransport(root: folder, deviceId: try b.repo.syncState().deviceId)))
+                SyncEngine(repo: a.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+                    deviceId: try a.repo.syncState().deviceId, session: FakeGitHubServer.session())),
+                SyncEngine(repo: b.repo, transport: GitHubTransport(owner: "o", repo: "r", token: "t",
+                    deviceId: try b.repo.syncState().deviceId, session: FakeGitHubServer.session())))
     }
 
     func testUnadoptedProjectAppearsInCatalogThenDisappearsAfterAdopt() throws {
