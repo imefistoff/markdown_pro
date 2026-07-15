@@ -76,14 +76,18 @@ public final class Repository {
                  labels: [], subtaskCount: Int(r.int("subtask_count")),
                  subtaskDoneCount: Int(r.int("subtask_done_count")),
                  documentCount: Int(r.int("document_count")),
-                 attention: r.stringOrNil("attention").flatMap(TaskAttention.init(rawValue:)))
+                 attention: r.stringOrNil("attention").flatMap(TaskAttention.init(rawValue:)),
+                 launchKind: r.stringOrNil("launch_kind").flatMap(DocumentKind.init(rawValue:)))
     }
 
     private static let taskSelect = """
         SELECT t.*,
                (SELECT COUNT(*) FROM subtasks s WHERE s.task_id = t.id) AS subtask_count,
                (SELECT COUNT(*) FROM subtasks s WHERE s.task_id = t.id AND s.done = 1) AS subtask_done_count,
-               (SELECT COUNT(*) FROM documents d WHERE d.task_id = t.id) AS document_count
+               (SELECT COUNT(*) FROM documents d WHERE d.task_id = t.id) AS document_count,
+               (SELECT d.kind FROM documents d
+                  WHERE d.task_id = t.id AND d.state = 'approved' AND d.kind IN ('spec','plan')
+                  ORDER BY COALESCE(d.updated_at, d.created_at) DESC, d.id DESC LIMIT 1) AS launch_kind
         FROM tasks t
         """
 
@@ -565,6 +569,91 @@ public final class Repository {
             ReviewQueueItem(document: linkedDocument(from: r), taskId: r.int("task_id"),
                             taskTitle: r.string("task_title"), projectId: r.int("p_id"),
                             projectName: r.string("project_name"))
+        }
+    }
+
+    // MARK: - Launch
+
+    public func projectLaunchSettings(_ projectId: Int64) throws -> ProjectLaunchSettings {
+        guard let row = try db.query("""
+            SELECT id, name, repo_path, permission_preset, use_worktree
+            FROM projects WHERE id = ?
+            """, [.integer(projectId)]).first else {
+            throw RepositoryError.notFound("project \(projectId)")
+        }
+        var specPrompt = LaunchTemplates.defaultSpecPrompt
+        var planPrompt = LaunchTemplates.defaultPlanPrompt
+        for t in try db.query("SELECT doc_kind, command FROM launch_templates WHERE project_id = ?",
+                              [.integer(projectId)]) {
+            switch t.string("doc_kind") {
+            case "spec": specPrompt = t.string("command")
+            case "plan": planPrompt = t.string("command")
+            default: break
+            }
+        }
+        return ProjectLaunchSettings(
+            projectId: projectId,
+            projectName: row.string("name"),
+            repoPath: row.stringOrNil("repo_path").flatMap { $0.isEmpty ? nil : $0 },
+            permissionPreset: PermissionPreset(rawValue: row.string("permission_preset")) ?? .acceptEdits,
+            useWorktree: row.bool("use_worktree"),
+            specPrompt: specPrompt,
+            planPrompt: planPrompt)
+    }
+
+    public func setProjectLaunchSettings(_ s: ProjectLaunchSettings) throws {
+        try db.transaction {
+            try db.execute("""
+                UPDATE projects SET repo_path = ?, permission_preset = ?, use_worktree = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                [s.repoPath.map { .text($0) } ?? .null, .text(s.permissionPreset.rawValue),
+                 .integer(s.useWorktree ? 1 : 0), .text(now()), .integer(s.projectId)])
+            try upsertLaunchTemplate(projectId: s.projectId, kind: .spec,
+                                     prompt: s.specPrompt, default: LaunchTemplates.defaultSpecPrompt)
+            try upsertLaunchTemplate(projectId: s.projectId, kind: .plan,
+                                     prompt: s.planPrompt, default: LaunchTemplates.defaultPlanPrompt)
+        }
+    }
+
+    /// A row exists only when a template differs from its built-in default;
+    /// resetting to the default removes the row.
+    private func upsertLaunchTemplate(projectId: Int64, kind: DocumentKind,
+                                      prompt: String, default def: String) throws {
+        if prompt == def {
+            try db.execute("DELETE FROM launch_templates WHERE project_id = ? AND doc_kind = ?",
+                           [.integer(projectId), .text(kind.rawValue)])
+        } else {
+            try db.execute("""
+                INSERT INTO launch_templates (project_id, doc_kind, command) VALUES (?, ?, ?)
+                ON CONFLICT(project_id, doc_kind) DO UPDATE SET command = excluded.command
+                """, [.integer(projectId), .text(kind.rawValue), .text(prompt)])
+        }
+    }
+
+    public func projectIdsWithRepoPath() throws -> Set<Int64> {
+        Set(try db.query("SELECT id FROM projects WHERE repo_path IS NOT NULL AND repo_path != ''")
+            .map { $0.int("id") })
+    }
+
+    /// The newest approved reviewable document for a task — what the Launch
+    /// button acts on.
+    public func latestApprovedDocument(taskId: Int64) throws -> LinkedDocument? {
+        try db.query("""
+            SELECT * FROM documents
+            WHERE task_id = ? AND state = 'approved' AND kind IN ('proposal','spec','plan')
+            ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT 1
+            """, [.integer(taskId)]).first.map(linkedDocument(from:))
+    }
+
+    /// Records that a Claude Code session was launched: attention → executing,
+    /// plus an activity row. `TaskAttention.executing` finally gains a writer.
+    public func recordLaunch(taskId: Int64, kind: DocumentKind, actor: String = "user") throws {
+        try db.transaction {
+            try setAttentionColumn(taskId: taskId, TaskAttention.executing.rawValue)
+            let what = (kind == .spec) ? "planning" : "execution"
+            try logActivity(taskId: taskId, actor: actor, kind: "launch",
+                            message: "launched a Claude Code \(what) session")
         }
     }
 

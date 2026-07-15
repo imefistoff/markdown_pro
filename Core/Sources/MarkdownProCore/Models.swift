@@ -274,12 +274,15 @@ public struct TaskItem: Identifiable, Hashable, Sendable {
     public var subtaskDoneCount: Int
     public var documentCount: Int
     public var attention: TaskAttention?
+    /// Kind of the newest approved spec/plan document, if any — gates the Launch button.
+    public var launchKind: DocumentKind?
 
     public init(id: Int64, projectId: Int64, title: String, details: String,
                 status: TaskStatus, priority: TaskPriority, dueDate: Date?,
                 sortOrder: Double, createdAt: Date, updatedAt: Date,
                 labels: [Label] = [], subtaskCount: Int = 0, subtaskDoneCount: Int = 0,
-                documentCount: Int = 0, attention: TaskAttention? = nil) {
+                documentCount: Int = 0, attention: TaskAttention? = nil,
+                launchKind: DocumentKind? = nil) {
         self.id = id
         self.projectId = projectId
         self.title = title
@@ -295,6 +298,7 @@ public struct TaskItem: Identifiable, Hashable, Sendable {
         self.subtaskDoneCount = subtaskDoneCount
         self.documentCount = documentCount
         self.attention = attention
+        self.launchKind = launchKind
     }
 
     public var isOverdue: Bool {

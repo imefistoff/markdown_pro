@@ -152,3 +152,85 @@ extension LaunchTests {
         XCTAssertEqual(fake.launched.map(\.taskId), [10])
     }
 }
+
+final class LaunchRepositoryTests: XCTestCase {
+    private var tempPath = ""
+    private var repo: Repository!
+    private var projectId: Int64 = 0
+    private var taskId: Int64 = 0
+
+    override func setUpWithError() throws {
+        tempPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("mdpro-launch-\(UUID().uuidString).sqlite")
+        repo = Repository(db: try Database.open(path: tempPath))
+        projectId = try repo.createProject(name: "Markdown Pro")
+        taskId = try repo.createTask(projectId: projectId, title: "Do the thing", status: .todo)
+    }
+    override func tearDownWithError() throws {
+        repo = nil
+        for s in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: tempPath + s) }
+    }
+
+    func testSettingsDefaultsWhenUnset() throws {
+        let s = try repo.projectLaunchSettings(projectId)
+        XCTAssertNil(s.repoPath)
+        XCTAssertEqual(s.permissionPreset, .acceptEdits)
+        XCTAssertTrue(s.useWorktree)
+        XCTAssertEqual(s.specPrompt, LaunchTemplates.defaultSpecPrompt)
+        XCTAssertEqual(s.projectName, "Markdown Pro")
+    }
+
+    func testSettingsRoundTripAndTemplateOverride() throws {
+        var s = try repo.projectLaunchSettings(projectId)
+        s.repoPath = "/Users/me/repo"
+        s.permissionPreset = .bypassPermissions
+        s.useWorktree = false
+        s.planPrompt = "custom {task_id}"
+        try repo.setProjectLaunchSettings(s)
+
+        let reloaded = try repo.projectLaunchSettings(projectId)
+        XCTAssertEqual(reloaded.repoPath, "/Users/me/repo")
+        XCTAssertEqual(reloaded.permissionPreset, .bypassPermissions)
+        XCTAssertFalse(reloaded.useWorktree)
+        XCTAssertEqual(reloaded.planPrompt, "custom {task_id}")
+        // Spec prompt was left at default → no override row stored.
+        XCTAssertEqual(reloaded.specPrompt, LaunchTemplates.defaultSpecPrompt)
+        let rows = try repo.db.query(
+            "SELECT doc_kind FROM launch_templates WHERE project_id = ?", [.integer(projectId)])
+        XCTAssertEqual(rows.map { $0.string("doc_kind") }, ["plan"])
+    }
+
+    func testResettingTemplateDeletesOverrideRow() throws {
+        var s = try repo.projectLaunchSettings(projectId)
+        s.planPrompt = "custom"
+        try repo.setProjectLaunchSettings(s)
+        s.planPrompt = LaunchTemplates.defaultPlanPrompt          // reset to default
+        try repo.setProjectLaunchSettings(s)
+        XCTAssertTrue(try repo.db.query(
+            "SELECT 1 FROM launch_templates WHERE project_id = ?", [.integer(projectId)]).isEmpty)
+    }
+
+    func testProjectIdsWithRepoPath() throws {
+        XCTAssertTrue(try repo.projectIdsWithRepoPath().isEmpty)
+        var s = try repo.projectLaunchSettings(projectId)
+        s.repoPath = "/Users/me/repo"
+        try repo.setProjectLaunchSettings(s)
+        XCTAssertEqual(try repo.projectIdsWithRepoPath(), [projectId])
+    }
+
+    func testRecordLaunchSetsExecutingAndLogs() throws {
+        try repo.recordLaunch(taskId: taskId, kind: .plan)
+        XCTAssertEqual(try repo.getTask(id: taskId)?.task.attention, .executing)
+        XCTAssertTrue(try repo.getTask(id: taskId)!.activity
+            .contains { $0.actor == "user" && $0.kind == "launch" })
+    }
+
+    func testLatestApprovedDocumentAndLaunchKind() throws {
+        let specId = try repo.submitForReview(taskId: taskId, path: "/tmp/spec.md", kind: .spec)
+        try repo.applyVerdict(.approve, documentId: specId)
+        let latest = try repo.latestApprovedDocument(taskId: taskId)
+        XCTAssertEqual(latest?.kind, .spec)
+        // TaskItem now exposes launchKind for the button gate.
+        XCTAssertEqual(try repo.getTask(id: taskId)?.task.launchKind, .spec)
+    }
+}
