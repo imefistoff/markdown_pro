@@ -177,4 +177,50 @@ final class OpRecordingTests: XCTestCase {
             [.integer(before), .text(taskUUID)]).first
         XCTAssertEqual(op?.stringOrNil("value"), String(projectB), "a move records project_id under the new project")
     }
+
+    // MARK: Subtask / label recording
+
+    func testSubtaskRecordsUnderTaskParent() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "parent")
+        let subId = try tdb.repo.addSubtask(taskId: taskId, title: "child")
+
+        let subUUID = try tdb.repo.entityUUID(.subtask, id: subId)!
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        let insert = try tdb.repo.db.query(
+            "SELECT parent_uuid FROM ops WHERE entity = 'subtask' AND kind = 'insert' AND entity_uuid = ?",
+            [.text(subUUID)]).first
+        XCTAssertEqual(insert?.stringOrNil("parent_uuid"), taskUUID)
+    }
+
+    func testSetSubtaskDoneRecordsUpdate() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "parent")
+        let subId = try tdb.repo.addSubtask(taskId: taskId, title: "child")
+        try tdb.repo.setSubtaskDone(id: subId, done: true)
+
+        let subUUID = try tdb.repo.entityUUID(.subtask, id: subId)!
+        XCTAssertEqual(try tdb.repo.db.query(
+            "SELECT value FROM ops WHERE entity_uuid = ? AND field = 'done' ORDER BY id DESC LIMIT 1",
+            [.text(subUUID)]).first?.string("value"), "1")
+    }
+
+    func testLabelLinkIsLWWBoolean() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "labelled")
+        let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
+        let labelId = try tdb.repo.addLabel(taskId: taskId, name: "feature")
+        try tdb.repo.removeLabel(taskId: taskId, labelId: labelId)
+
+        let composite = "\(taskUUID):feature"
+        let linkOps = try tdb.repo.db.query(
+            "SELECT kind, field, value FROM ops WHERE entity = 'task_label' AND entity_uuid = ? ORDER BY id",
+            [.text(composite)])
+        XCTAssertTrue(linkOps.allSatisfy { $0.string("kind") == "update" && $0.string("field") == "attached" },
+                      "links are LWW boolean updates, never insert/delete")
+        XCTAssertEqual(linkOps.map { $0.string("value") }, ["1", "0"])
+    }
 }

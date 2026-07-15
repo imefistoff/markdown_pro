@@ -129,6 +129,23 @@ public final class Repository {
                 ("due_date", t.stringOrNil("due_date").map { .text($0) } ?? .null),
                 ("sort_order", .real(t.double("sort_order")))
             ])
+            let taskId = t.int("id")
+            for s in try db.query("SELECT * FROM subtasks WHERE task_id = ?", [.integer(taskId)]) {
+                try recordInsert(.subtask, uuid: s.string("uuid"), projectId: projectId, parentUUID: uuid, fields: [
+                    ("title", .text(s.string("title"))), ("done", .integer(s.int("done"))),
+                    ("sort_order", .real(s.double("sort_order")))
+                ])
+            }
+            for l in try db.query("""
+                SELECT l.uuid, l.name, l.color FROM task_labels tl
+                JOIN labels l ON l.id = tl.label_id WHERE tl.task_id = ?
+                """, [.integer(taskId)]) {
+                try recordInsert(.label, uuid: l.string("uuid"), projectId: projectId, parentUUID: nil, fields: [
+                    ("name", .text(l.string("name"))), ("color", .text(l.string("color")))
+                ])
+                try recordUpdate(.taskLabel, uuid: "\(uuid):\(l.string("name"))", projectId: projectId,
+                                 field: "attached", value: .text("1"))
+            }
         }
     }
 
@@ -363,23 +380,44 @@ public final class Repository {
 
     @discardableResult
     public func addSubtask(taskId: Int64, title: String) throws -> Int64 {
-        let maxOrder = try db.query("SELECT COALESCE(MAX(sort_order), 0) AS m FROM subtasks WHERE task_id = ?",
-                                    [.integer(taskId)]).first?.double("m") ?? 0
-        try db.execute("INSERT INTO subtasks (task_id, title, sort_order) VALUES (?, ?, ?)",
-                       [.integer(taskId), .text(title), .real(maxOrder + 1)])
-        try touchTask(taskId)
-        return db.lastInsertRowId
+        try db.transaction {
+            let maxOrder = try db.query("SELECT COALESCE(MAX(sort_order), 0) AS m FROM subtasks WHERE task_id = ?",
+                                        [.integer(taskId)]).first?.double("m") ?? 0
+            let uuid = UUID().uuidString
+            try db.execute("INSERT INTO subtasks (task_id, title, sort_order, uuid) VALUES (?, ?, ?, ?)",
+                           [.integer(taskId), .text(title), .real(maxOrder + 1), .text(uuid)])
+            let subId = db.lastInsertRowId
+            try touchTask(taskId)
+            if let projectId = try projectId(forTask: taskId), let taskUUID = try entityUUID(.task, id: taskId) {
+                try recordInsert(.subtask, uuid: uuid, projectId: projectId, parentUUID: taskUUID, fields: [
+                    ("title", .text(title)), ("done", .integer(0)), ("sort_order", .real(maxOrder + 1))
+                ])
+            }
+            return subId
+        }
     }
 
     public func setSubtaskDone(id: Int64, done: Bool) throws {
-        try db.execute("UPDATE subtasks SET done = ? WHERE id = ?", [.integer(done ? 1 : 0), .integer(id)])
-        if let taskId = try db.query("SELECT task_id FROM subtasks WHERE id = ?", [.integer(id)]).first?.int("task_id") {
+        try db.transaction {
+            try db.execute("UPDATE subtasks SET done = ? WHERE id = ?", [.integer(done ? 1 : 0), .integer(id)])
+            guard let taskId = try db.query("SELECT task_id FROM subtasks WHERE id = ?", [.integer(id)])
+                .first?.int("task_id") else { return }
             try touchTask(taskId)
+            if let uuid = try entityUUID(.subtask, id: id), let projectId = try projectId(forTask: taskId) {
+                try recordUpdate(.subtask, uuid: uuid, projectId: projectId,
+                                 field: "done", value: .integer(done ? 1 : 0))
+            }
         }
     }
 
     public func deleteSubtask(id: Int64) throws {
-        try db.execute("DELETE FROM subtasks WHERE id = ?", [.integer(id)])
+        try db.transaction {
+            let row = try db.query("SELECT uuid, task_id FROM subtasks WHERE id = ?", [.integer(id)]).first
+            if let row, let projectId = try projectId(forTask: row.int("task_id")) {
+                try recordDelete(.subtask, uuid: row.string("uuid"), projectId: projectId)
+            }
+            try db.execute("DELETE FROM subtasks WHERE id = ?", [.integer(id)])
+        }
     }
 
     private func touchTask(_ id: Int64) throws {
@@ -395,24 +433,50 @@ public final class Repository {
     }
 
     /// Adds a label to a task, creating the label if needed.
+    ///
+    /// Deliberately transaction-free: `createTask` and `insertImportedProject`
+    /// call this from inside their own `db.transaction`, and `db.transaction`
+    /// (`BEGIN IMMEDIATE`) is not reentrant. When called standalone it is no
+    /// more or less atomic than before; when called from a caller's
+    /// transaction, the ops commit with it.
     @discardableResult
     public func addLabel(taskId: Int64, name: String, color: String = "#8B5CF6") throws -> Int64 {
-        let existing = try db.query("SELECT id FROM labels WHERE name = ? COLLATE NOCASE", [.text(name)]).first
+        let existing = try db.query("SELECT id, uuid FROM labels WHERE name = ? COLLATE NOCASE", [.text(name)]).first
         let labelId: Int64
+        let labelUUID: String
         if let existing {
             labelId = existing.int("id")
+            labelUUID = existing.string("uuid")
         } else {
-            try db.execute("INSERT INTO labels (name, color) VALUES (?, ?)", [.text(name), .text(color)])
+            labelUUID = UUID().uuidString
+            try db.execute("INSERT INTO labels (name, color, uuid) VALUES (?, ?, ?)",
+                           [.text(name), .text(color), .text(labelUUID)])
             labelId = db.lastInsertRowId
         }
         try db.execute("INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?, ?)",
                        [.integer(taskId), .integer(labelId)])
+        if let projectId = try projectId(forTask: taskId), let taskUUID = try entityUUID(.task, id: taskId) {
+            // Label carries its name (labels merge by name) and colour.
+            try recordInsert(.label, uuid: labelUUID, projectId: projectId, parentUUID: nil, fields: [
+                ("name", .text(name)), ("color", .text(color))
+            ])
+            try recordUpdate(.taskLabel, uuid: "\(taskUUID):\(name)", projectId: projectId,
+                             field: "attached", value: .text("1"))
+        }
         return labelId
     }
 
     public func removeLabel(taskId: Int64, labelId: Int64) throws {
-        try db.execute("DELETE FROM task_labels WHERE task_id = ? AND label_id = ?",
-                       [.integer(taskId), .integer(labelId)])
+        try db.transaction {
+            let labelName = try db.query("SELECT name FROM labels WHERE id = ?", [.integer(labelId)]).first?.string("name")
+            try db.execute("DELETE FROM task_labels WHERE task_id = ? AND label_id = ?",
+                           [.integer(taskId), .integer(labelId)])
+            if let labelName, let projectId = try projectId(forTask: taskId),
+               let taskUUID = try entityUUID(.task, id: taskId) {
+                try recordUpdate(.taskLabel, uuid: "\(taskUUID):\(labelName)", projectId: projectId,
+                                 field: "attached", value: .text("0"))
+            }
+        }
     }
 
     // MARK: - Activity
@@ -808,6 +872,12 @@ public final class Repository {
     func projectIsSynced(_ projectId: Int64) throws -> Bool {
         try db.query("SELECT synced FROM projects WHERE id = ?", [.integer(projectId)])
             .first?.bool("synced") ?? false
+    }
+
+    /// Resolves the owning project for a task, so subtask/label ops (which
+    /// only carry a task id) can be recorded under the right project.
+    func projectId(forTask taskId: Int64) throws -> Int64? {
+        try db.query("SELECT project_id FROM tasks WHERE id = ?", [.integer(taskId)]).first?.intOrNil("project_id")
     }
 
     func entityUUID(_ entity: SyncEntity, id: Int64) throws -> String? {
