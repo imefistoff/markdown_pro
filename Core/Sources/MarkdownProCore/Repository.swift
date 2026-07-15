@@ -631,6 +631,9 @@ public final class Repository {
                 if let uuid = try entityUUID(.document, id: docId), let projectId = try projectId(forDocument: docId) {
                     try recordUpdate(.document, uuid: uuid, projectId: projectId, field: "state", value: .text("needs_review"))
                     try recordUpdate(.document, uuid: uuid, projectId: projectId, field: "round", value: .integer(newRound))
+                    if let providedTitle = title {
+                        try recordUpdate(.document, uuid: uuid, projectId: projectId, field: "title", value: .text(providedTitle))
+                    }
                 }
             } else {
                 let uuid = UUID().uuidString
@@ -649,12 +652,22 @@ public final class Repository {
                     ])
                 }
             }
+            let supersededDocs = try db.query("""
+                SELECT uuid FROM documents
+                WHERE task_id = ? AND kind = 'proposal' AND path != ? AND state IN ('approved', 'rejected')
+                """, [.integer(taskId), .text(expanded)])
             try db.execute("""
                 UPDATE documents SET state = 'superseded', updated_at = ?
                 WHERE task_id = ? AND kind = 'proposal' AND path != ?
                   AND state IN ('approved', 'rejected')
                 """,
                 [.text(now()), .integer(taskId), .text(expanded)])
+            if let ownerProject = try projectId(forTask: taskId) {
+                for supRow in supersededDocs {
+                    try recordUpdate(.document, uuid: supRow.string("uuid"), projectId: ownerProject,
+                                     field: "state", value: .text("superseded"))
+                }
+            }
             try setAttentionColumn(taskId: taskId, TaskAttention.needsReview.rawValue)
             return docId
         }

@@ -334,4 +334,21 @@ final class OpRecordingTests: XCTestCase {
             "SELECT parent_uuid FROM ops WHERE entity = 'annotation' AND kind = 'insert' AND entity_uuid = ?",
             [.text(annUUID)]).first?.stringOrNil("parent_uuid"), docUUID)
     }
+
+    func testSupersededProposalRecordsStateOp() throws {
+        let tdb = try TestDatabase()
+        let projectId = try syncedProject(tdb.repo)
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "review")
+        let pathA = try tdb.writeFile(named: "specA.md", contents: "# A")
+        let docA = try tdb.repo.submitForReview(taskId: taskId, path: pathA, title: "A")
+        try tdb.repo.applyVerdict(.approve, documentId: docA)
+        let docAUUID = try tdb.repo.entityUUID(.document, id: docA)!
+        let pathB = try tdb.writeFile(named: "specB.md", contents: "# B")
+        _ = try tdb.repo.submitForReview(taskId: taskId, path: pathB, title: "B")
+        let supersededOp = try tdb.repo.db.query(
+            "SELECT value FROM ops WHERE entity = 'document' AND entity_uuid = ? AND field = 'state' ORDER BY id DESC LIMIT 1",
+            [.text(docAUUID)]).first
+        XCTAssertEqual(supersededOp?.stringOrNil("value"), "superseded",
+                       "superseding a settled proposal must record a state op so peers converge")
+    }
 }
