@@ -200,8 +200,17 @@ public struct SyncReplayer {
             if let existing = try db.query(
                 "SELECT hlc FROM field_stamps WHERE entity_uuid = ? AND field = ?",
                 [.text(op.entityUUID), .text(field)]).first?.string("hlc"), existing >= op.hlc { return }
-            try db.execute("UPDATE \(table) SET \(field) = ? WHERE uuid = ?",
-                           [op.value.map { .text($0) } ?? .null, .text(op.entityUUID)])
+            var boundValue: SQLValue = op.value.map { .text($0) } ?? .null
+            if op.entity == .task, field == "project_id" {
+                // The op carries the destination project's UUID (local ids are device-local).
+                guard let destUUID = op.value,
+                      let localId = try db.query("SELECT id FROM projects WHERE uuid = ?", [.text(destUUID)])
+                        .first?.intOrNil("id") else {
+                    return  // destination project not present locally — skip rather than corrupt the FK
+                }
+                boundValue = .integer(localId)
+            }
+            try db.execute("UPDATE \(table) SET \(field) = ? WHERE uuid = ?", [boundValue, .text(op.entityUUID)])
             try db.execute("""
                 INSERT INTO field_stamps (entity_uuid, field, hlc) VALUES (?, ?, ?)
                 ON CONFLICT(entity_uuid, field) DO UPDATE SET hlc = excluded.hlc

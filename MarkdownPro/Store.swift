@@ -101,6 +101,7 @@ final class Store: ObservableObject {
         if version != lastDataVersion {
             lastDataVersion = version
             refresh()
+            scheduleDebouncedSync()
         }
     }
 

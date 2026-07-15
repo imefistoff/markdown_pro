@@ -31,6 +31,20 @@ final class OpRecordingTests: XCTestCase {
                              "a fresh clock must not reissue a stamp already in the log")
     }
 
+    func testClockSeedsPastRemoteStampsInFieldStamps() throws {
+        let tdb = try TestDatabase()
+        let path = tdb.directory.appendingPathComponent("test.sqlite").path
+        // A remote stamp far in the future, applied via replay (lands in field_stamps, not ops).
+        let high = HLC(millis: 9_500_000_000_000, counter: 3, deviceId: "remote")
+        try tdb.repo.db.execute("""
+            INSERT INTO field_stamps (entity_uuid, field, hlc) VALUES ('u', 'title', ?)
+            """, [.text(high.description)])
+        // A fresh SyncState (simulating a relaunch) must seed past it.
+        let db2 = try Database.open(path: path)
+        let state = try SyncState(db: db2, deviceName: "Test Mac")
+        XCTAssertGreaterThan(state.clock.now(), high, "clock must seed past remote stamps recorded in field_stamps")
+    }
+
     // MARK: Project recording
 
     private func ops(_ repo: Repository, entity: String) throws -> [SQLRow] {
@@ -168,6 +182,7 @@ final class OpRecordingTests: XCTestCase {
         try tdb.repo.setProjectSynced(id: projectA, synced: true)
         let projectB = try tdb.repo.createProject(name: "B")
         try tdb.repo.setProjectSynced(id: projectB, synced: true)
+        let projectBUUID = try tdb.repo.entityUUID(.project, id: projectB)!
         let taskId = try tdb.repo.createTask(projectId: projectA, title: "movable")
         let taskUUID = try tdb.repo.entityUUID(.task, id: taskId)!
         let before = try tdb.repo.db.query("SELECT COALESCE(MAX(id), 0) AS m FROM ops").first!.int("m")
@@ -175,7 +190,9 @@ final class OpRecordingTests: XCTestCase {
         let op = try tdb.repo.db.query(
             "SELECT value FROM ops WHERE id > ? AND entity_uuid = ? AND field = 'project_id'",
             [.integer(before), .text(taskUUID)]).first
-        XCTAssertEqual(op?.stringOrNil("value"), String(projectB), "a move records project_id under the new project")
+        // The value crossing the transport is the destination project's UUID —
+        // a device-local integer id would be meaningless (or wrong) on a peer.
+        XCTAssertEqual(op?.stringOrNil("value"), projectBUUID, "a move records project_id as the destination project's UUID")
     }
 
     // MARK: Subtask / label recording
@@ -403,6 +420,24 @@ final class OpRecordingTests: XCTestCase {
 
         try assertRecords(tdb, "deleteTask") { try repo.deleteTask(id: taskId) }
         try assertRecords(tdb, "deleteProject") { try repo.deleteProject(id: projectId) }
+    }
+
+    func testSnapshotIncludesActivityAndAnnotations() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Preexisting")   // not synced yet
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "with history")
+        _ = try tdb.repo.logActivity(taskId: taskId, actor: "user", kind: "note", message: "did a thing")
+        let path = try tdb.writeFile(named: "spec.md", contents: "# Spec")
+        let docId = try tdb.repo.submitForReview(taskId: taskId, path: path, title: "Spec")
+        _ = try tdb.repo.addAnnotation(documentId: docId, quote: "Spec", comment: "tighten")
+        let before = try tdb.repo.db.query("SELECT COUNT(*) AS c FROM ops").first!.int("c")
+
+        try tdb.repo.setProjectSynced(id: projectId, synced: true)   // triggers snapshot of pre-existing content
+
+        let activityOps = try tdb.repo.db.query("SELECT 1 FROM ops WHERE id > ? AND entity = 'activity'", [.integer(before)])
+        let annotationOps = try tdb.repo.db.query("SELECT 1 FROM ops WHERE id > ? AND entity = 'annotation'", [.integer(before)])
+        XCTAssertFalse(activityOps.isEmpty, "toggling sync must snapshot existing activity")
+        XCTAssertFalse(annotationOps.isEmpty, "toggling sync must snapshot existing annotations")
     }
 
     // MARK: MCP parity

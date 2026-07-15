@@ -149,12 +149,28 @@ public final class Repository {
                 try recordUpdate(.taskLabel, uuid: "\(uuid):\(l.string("name"))", projectId: projectId,
                                  field: "attached", value: .text("1"))
             }
+            for a in try db.query("SELECT * FROM activity WHERE task_id = ?", [.integer(taskId)]) {
+                try recordInsert(.activity, uuid: a.string("uuid"), projectId: projectId, parentUUID: uuid, fields: [
+                    ("actor", .text(a.string("actor"))), ("kind", .text(a.string("kind"))), ("message", .text(a.string("message")))
+                ])
+            }
             for d in try db.query("SELECT * FROM documents WHERE task_id = ?", [.integer(taskId)]) {
                 try recordInsert(.document, uuid: d.string("uuid"), projectId: projectId, parentUUID: uuid, fields: [
                     ("title", .text(d.string("title"))), ("kind", .text(d.string("kind"))),
                     ("state", d.stringOrNil("state").map { .text($0) } ?? .null),
                     ("round", .integer(d.int("round")))
                 ])
+                for an in try db.query("SELECT * FROM annotations WHERE document_id = ?", [.integer(d.int("id"))]) {
+                    try recordInsert(.annotation, uuid: an.string("uuid"), projectId: projectId, parentUUID: d.string("uuid"), fields: [
+                        ("round", .integer(an.int("round"))), ("quote", .text(an.string("quote"))),
+                        ("prefix", .text(an.string("prefix"))), ("suffix", .text(an.string("suffix"))),
+                        ("comment", .text(an.string("comment"))), ("author", .text(an.string("author"))),
+                        ("state", .text(an.string("state")))
+                    ])
+                    if let reply = an.stringOrNil("reply") {
+                        try recordUpdate(.annotation, uuid: an.string("uuid"), projectId: projectId, field: "reply", value: .text(reply))
+                    }
+                }
             }
         }
         for d in try db.query("SELECT * FROM documents WHERE project_id = ?", [.integer(projectId)]) {
@@ -163,6 +179,17 @@ public final class Repository {
                 ("state", d.stringOrNil("state").map { .text($0) } ?? .null),
                 ("round", .integer(d.int("round")))
             ])
+            for an in try db.query("SELECT * FROM annotations WHERE document_id = ?", [.integer(d.int("id"))]) {
+                try recordInsert(.annotation, uuid: an.string("uuid"), projectId: projectId, parentUUID: d.string("uuid"), fields: [
+                    ("round", .integer(an.int("round"))), ("quote", .text(an.string("quote"))),
+                    ("prefix", .text(an.string("prefix"))), ("suffix", .text(an.string("suffix"))),
+                    ("comment", .text(an.string("comment"))), ("author", .text(an.string("author"))),
+                    ("state", .text(an.string("state")))
+                ])
+                if let reply = an.stringOrNil("reply") {
+                    try recordUpdate(.annotation, uuid: an.string("uuid"), projectId: projectId, field: "reply", value: .text(reply))
+                }
+            }
         }
     }
 
@@ -362,7 +389,9 @@ public final class Repository {
             sets.append("project_id = ?")
             bindings.append(.integer(projectId))
             logs.append(("field", "moved to another project"))
-            syncFields.append(("project_id", .integer(projectId)))
+            // Local ids are device-local: record the destination project's UUID so
+            // the replayer on the peer can translate it back to ITS local id.
+            syncFields.append(("project_id", .text(try entityUUID(.project, id: projectId) ?? "")))
         }
         guard !sets.isEmpty else { return }
         sets.append("updated_at = ?")

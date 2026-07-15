@@ -20,9 +20,17 @@ public final class SyncState {
         }
 
         clock = HybridLogicalClock(deviceId: deviceId)
-        // Seed past the highest stamp already in the log (any device — so we
-        // never collide with a stamp another machine's ops taught us about).
-        if let top = try db.query("SELECT MAX(hlc) AS m FROM ops").first?.stringOrNil("m"),
+        // Seed past the highest stamp already known (any device — so we never
+        // collide with a stamp another machine's ops taught us about). Remote
+        // stamps can land in field_stamps/tombstones without ever appearing in
+        // ops (e.g. this device made no local edit), so all three are considered.
+        if let top = try db.query("""
+            SELECT MAX(h) AS m FROM (
+                SELECT MAX(hlc) AS h FROM ops
+                UNION ALL SELECT MAX(hlc) FROM field_stamps
+                UNION ALL SELECT MAX(hlc) FROM tombstones
+            )
+            """).first?.stringOrNil("m"),
            let stamp = HLC.parse(top) {
             clock.seed(lastMillis: stamp.millis, counter: stamp.counter)
         }

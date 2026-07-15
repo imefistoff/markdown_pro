@@ -131,4 +131,27 @@ final class SyncEngineTests: XCTestCase {
             XCTAssertFalse(contents.contains("secret"), "an unsynced project must never reach the transport")
         }
     }
+
+    func testTaskMoveBetweenSyncedProjectsConvergesToCorrectProject() throws {
+        let p = try makePair()
+        let projA = try p.a.repo.createProject(name: "Alpha"); try p.a.repo.setProjectSynced(id: projA, synced: true)
+        let projB = try p.a.repo.createProject(name: "Beta");  try p.a.repo.setProjectSynced(id: projB, synced: true)
+        let projAUUID = try p.a.repo.entityUUID(.project, id: projA)!
+        let projBUUID = try p.a.repo.entityUUID(.project, id: projB)!
+        let taskId = try p.a.repo.createTask(projectId: projA, title: "mover")
+        let taskUUID = try p.a.repo.entityUUID(.task, id: taskId)!
+        try p.engineA.sync()
+        try p.b.repo.adoptProject(remoteUUID: projAUUID, name: "Alpha")
+        try p.b.repo.adoptProject(remoteUUID: projBUUID, name: "Beta")
+        try p.engineB.sync()
+
+        // Move on A from Alpha to Beta, sync across.
+        try p.a.repo.updateTask(id: taskId, changes: .init(projectId: projB))
+        try p.engineA.sync(); try p.engineB.sync()
+
+        // On B, the task must now belong to B's local "Beta" project, not a stray integer.
+        let bBetaId = try p.b.repo.db.query("SELECT id FROM projects WHERE uuid = ?", [.text(projBUUID)]).first!.int("id")
+        let bTaskProject = try p.b.repo.db.query("SELECT project_id FROM tasks WHERE uuid = ?", [.text(taskUUID)]).first?.intOrNil("project_id")
+        XCTAssertEqual(bTaskProject, bBetaId, "a cross-project move must land the task under the peer's matching project")
+    }
 }
