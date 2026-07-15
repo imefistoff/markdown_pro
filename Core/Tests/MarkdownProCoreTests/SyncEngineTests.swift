@@ -100,6 +100,24 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(try b.repo.getTask(id: taskId)!.task.title, "A wins")
     }
 
+    func testSyncBeforeAdoptStillMaterializesAfterAdopt() throws {
+        let p = try makePair()
+        let projectId = try p.a.repo.createProject(name: "Shared")
+        try p.a.repo.setProjectSynced(id: projectId, synced: true)
+        let projectUUID = try p.a.repo.entityUUID(.project, id: projectId)!
+        try p.a.repo.createTask(projectId: projectId, title: "Ship it")
+        try p.engineA.sync()
+
+        // B syncs BEFORE adopting — P's ops are fetched but skipped (unadopted).
+        try p.engineB.sync()
+        XCTAssertTrue(try p.b.repo.listTasks().isEmpty)
+
+        // Adopt, then sync again — the task must still materialize.
+        try p.b.repo.adoptProject(remoteUUID: projectUUID, name: "Shared")
+        try p.engineB.sync()
+        XCTAssertEqual(try p.b.repo.listTasks().map(\.title), ["Ship it"])
+    }
+
     func testContainmentUnsyncedProjectNeverReachesFolder() throws {
         let p = try makePair()
         let projectId = try p.a.repo.createProject(name: "Private") // not synced
