@@ -67,7 +67,9 @@ final class MigrationTests: XCTestCase {
 
         // annotations table exists and is queryable.
         XCTAssertNoThrow(try db.query("SELECT COUNT(*) AS c FROM annotations"))
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 2)
+        // Database.open migrates all the way to the latest version (now 3),
+        // not just v2 — this test only cares that the v2 columns/table landed.
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
     }
 
     func testMigrationIsIdempotentAcrossReopens() throws {
@@ -92,6 +94,29 @@ final class MigrationTests: XCTestCase {
         }
         let taskCols = try db.query("PRAGMA table_info(tasks)").map { $0.string("name") }
         XCTAssertTrue(taskCols.contains("attention"))
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 2)
+        // Database.open migrates all the way to the latest version (now 3),
+        // not just v2 — this test only cares that the v2 columns/table landed.
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+    }
+
+    func testMigrationV3AddsLaunchSchema() throws {
+        try makeLegacyDB()                 // v1 → open runs all migrations
+        let db = try Database.open(path: path)
+
+        let projectCols = try db.query("PRAGMA table_info(projects)").map { $0.string("name") }
+        for col in ["repo_path", "permission_preset", "use_worktree"] {
+            XCTAssertTrue(projectCols.contains(col), "projects.\(col) missing after v3 migration")
+        }
+        // launch_templates table exists and is queryable.
+        XCTAssertNoThrow(try db.query("SELECT COUNT(*) AS c FROM launch_templates"))
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+    }
+
+    func testMigrationV3IsIdempotent() throws {
+        try makeLegacyDB()
+        _ = try Database.open(path: path)
+        XCTAssertNoThrow(try Database.open(path: path))   // second open must not throw
+        let db = try Database.open(path: path)
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
     }
 }

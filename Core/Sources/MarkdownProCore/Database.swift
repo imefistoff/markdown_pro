@@ -149,5 +149,31 @@ public enum Database {
                 try db.execute("PRAGMA user_version = 2")
             }
         }
+        if version < 3 {
+            try db.transaction {
+                // Column-existence guards keep a partially-upgraded DB (crash between
+                // processes) migrating cleanly, exactly like the v2 step. No CHECK
+                // constraints on enum-like columns: validated in Swift.
+                let projectCols = try db.query("PRAGMA table_info(projects)").map { $0.string("name") }
+                if !projectCols.contains("repo_path") {
+                    try db.execute("ALTER TABLE projects ADD COLUMN repo_path TEXT")
+                }
+                if !projectCols.contains("permission_preset") {
+                    try db.execute("ALTER TABLE projects ADD COLUMN permission_preset TEXT NOT NULL DEFAULT 'acceptEdits'")
+                }
+                if !projectCols.contains("use_worktree") {
+                    try db.execute("ALTER TABLE projects ADD COLUMN use_worktree INTEGER NOT NULL DEFAULT 1")
+                }
+                try db.execute("""
+                    CREATE TABLE IF NOT EXISTS launch_templates (
+                        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        doc_kind   TEXT    NOT NULL,
+                        command    TEXT    NOT NULL,
+                        PRIMARY KEY (project_id, doc_kind)
+                    )
+                    """)
+                try db.execute("PRAGMA user_version = 3")
+            }
+        }
     }
 }

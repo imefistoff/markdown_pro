@@ -57,6 +57,17 @@ public enum DocumentKind: String, CaseIterable, Codable, Sendable {
     case note
     case wiki
     case proposal
+    case spec
+    case plan
+
+    /// Kinds that go through the review queue and therefore may NOT be added
+    /// via attach_document (only via submit_for_review).
+    public var isReviewable: Bool {
+        switch self {
+        case .proposal, .spec, .plan: return true
+        case .note, .wiki: return false
+        }
+    }
 }
 
 /// Review lifecycle; only meaningful for `kind == .proposal`.
