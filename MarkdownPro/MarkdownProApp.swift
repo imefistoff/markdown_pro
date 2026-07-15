@@ -5,6 +5,7 @@ import MarkdownProCore
 @main
 struct MarkdownProApp: App {
     @StateObject private var store = Store()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {
@@ -15,6 +16,22 @@ struct MarkdownProApp: App {
         .commands {
             ExportImportCommands(store: store)
         }
+        Settings {
+            SyncSettingsView()
+                .environmentObject(store)
+        }
+    }
+}
+
+/// Runs a final sync (if a folder is configured) before quitting. `Store.syncNow()`
+/// is now synchronous on the main actor, so this hook returns only once the sync
+/// has actually finished — no `.terminateLater`/watchdog dance needed.
+/// `Store.init()` sets `SyncQuitHook.shared`; if no sync folder is configured the
+/// hook still exists but `Store.syncNow()` is a no-op.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        SyncQuitHook.shared?()
+        return .terminateNow
     }
 }
 

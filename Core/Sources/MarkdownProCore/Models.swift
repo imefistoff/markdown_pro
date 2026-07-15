@@ -160,9 +160,12 @@ public struct Project: Identifiable, Hashable, Sendable {
     /// Aggregates for sidebar / stats.
     public var taskCount: Int
     public var doneCount: Int
+    /// Whether this project is opted into sync (`SyncEngine`).
+    public var synced: Bool
 
     public init(id: Int64, name: String, color: String, archived: Bool,
-                createdAt: Date, updatedAt: Date, taskCount: Int = 0, doneCount: Int = 0) {
+                createdAt: Date, updatedAt: Date, taskCount: Int = 0, doneCount: Int = 0,
+                synced: Bool = false) {
         self.id = id
         self.name = name
         self.color = color
@@ -171,6 +174,7 @@ public struct Project: Identifiable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.taskCount = taskCount
         self.doneCount = doneCount
+        self.synced = synced
     }
 
     /// Progress over tasks that are not canceled.

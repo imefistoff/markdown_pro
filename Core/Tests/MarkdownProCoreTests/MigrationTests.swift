@@ -67,9 +67,9 @@ final class MigrationTests: XCTestCase {
 
         // annotations table exists and is queryable.
         XCTAssertNoThrow(try db.query("SELECT COUNT(*) AS c FROM annotations"))
-        // Database.open migrates all the way to the latest version (now 3),
+        // Database.open migrates all the way to the latest version (now 4),
         // not just v2 — this test only cares that the v2 columns/table landed.
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 4)
     }
 
     func testMigrationIsIdempotentAcrossReopens() throws {
@@ -94,9 +94,9 @@ final class MigrationTests: XCTestCase {
         }
         let taskCols = try db.query("PRAGMA table_info(tasks)").map { $0.string("name") }
         XCTAssertTrue(taskCols.contains("attention"))
-        // Database.open migrates all the way to the latest version (now 3),
+        // Database.open migrates all the way to the latest version (now 4),
         // not just v2 — this test only cares that the v2 columns/table landed.
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 4)
     }
 
     func testMigrationV3AddsLaunchSchema() throws {
@@ -109,7 +109,8 @@ final class MigrationTests: XCTestCase {
         }
         // launch_templates table exists and is queryable.
         XCTAssertNoThrow(try db.query("SELECT COUNT(*) AS c FROM launch_templates"))
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+        // Open migrates all the way to the latest version (now 4).
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 4)
     }
 
     func testMigrationV3IsIdempotent() throws {
@@ -117,6 +118,54 @@ final class MigrationTests: XCTestCase {
         _ = try Database.open(path: path)
         XCTAssertNoThrow(try Database.open(path: path))   // second open must not throw
         let db = try Database.open(path: path)
-        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 3)
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 4)
+    }
+
+    func testV4AddsUUIDColumnsAndSyncTables() throws {
+        let tdb = try TestDatabase()
+        let db = tdb.repo.db
+
+        XCTAssertEqual(try db.query("PRAGMA user_version").first?.int("user_version"), 4)
+
+        for table in ["projects", "tasks", "subtasks", "labels", "documents", "annotations", "activity"] {
+            let cols = try db.query("PRAGMA table_info(\(table))").map { $0.string("name") }
+            XCTAssertTrue(cols.contains("uuid"), "\(table) is missing uuid")
+        }
+        let projectCols = try db.query("PRAGMA table_info(projects)").map { $0.string("name") }
+        XCTAssertTrue(projectCols.contains("synced"))
+        let docCols = try db.query("PRAGMA table_info(documents)").map { $0.string("name") }
+        XCTAssertTrue(docCols.contains("content_hash"))
+
+        let tables = try db.query("SELECT name FROM sqlite_master WHERE type = 'table'").map { $0.string("name") }
+        for expected in ["ops", "field_stamps", "tombstones", "sync_devices", "sync_blobs"] {
+            XCTAssertTrue(tables.contains(expected), "missing table \(expected)")
+        }
+    }
+
+    func testV4BackfillsUUIDForExistingRows() throws {
+        let tdb = try TestDatabase()
+        let projectId = try tdb.repo.createProject(name: "Backfill me")
+        let taskId = try tdb.repo.createTask(projectId: projectId, title: "row with a uuid")
+
+        let projectUUID = try tdb.repo.db.query("SELECT uuid FROM projects WHERE id = ?", [.integer(projectId)])
+            .first?.stringOrNil("uuid")
+        let taskUUID = try tdb.repo.db.query("SELECT uuid FROM tasks WHERE id = ?", [.integer(taskId)])
+            .first?.stringOrNil("uuid")
+
+        XCTAssertNotNil(projectUUID)
+        XCTAssertNotNil(taskUUID)
+        XCTAssertFalse(projectUUID!.isEmpty)
+        XCTAssertNotEqual(projectUUID, taskUUID)
+    }
+
+    func testV4IsIdempotentWhenReopened() throws {
+        let tdb = try TestDatabase()
+        let path = tdb.directory.appendingPathComponent("test.sqlite").path
+        // Reopen the same file — migrate() runs again and must not throw or duplicate.
+        let db2 = try Database.open(path: path)
+        XCTAssertEqual(try db2.query("PRAGMA user_version").first?.int("user_version"), 4)
+        let uuidIndexes = try db2.query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_projects_uuid'")
+        XCTAssertEqual(uuidIndexes.count, 1)
     }
 }

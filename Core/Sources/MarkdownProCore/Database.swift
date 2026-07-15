@@ -175,5 +175,93 @@ public enum Database {
                 try db.execute("PRAGMA user_version = 3")
             }
         }
+        if version < 4 {
+            try db.transaction {
+                // Cross-machine identity. SQLite cannot ALTER-ADD a UNIQUE
+                // NOT NULL column, so we add a plain TEXT column, backfill a
+                // UUID into every existing row, then enforce uniqueness with an
+                // index. NOT NULL is validated in Swift in create/record paths
+                // (createProject, createTask stamp UUIDs; other paths being
+                // updated in later tasks). The UNIQUE index enforces distinctness.
+                let uuidTables = ["projects", "tasks", "subtasks", "labels",
+                                  "documents", "annotations", "activity"]
+                for table in uuidTables {
+                    // Skip tables that don't exist in this schema version
+                    let tableExists = try db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [.text(table)]).count > 0
+                    if !tableExists {
+                        continue
+                    }
+                    let cols = try db.query("PRAGMA table_info(\(table))").map { $0.string("name") }
+                    if !cols.contains("uuid") {
+                        try db.execute("ALTER TABLE \(table) ADD COLUMN uuid TEXT")
+                    }
+                    // Backfill any row missing a uuid (covers a crash mid-migration).
+                    let missing = try db.query("SELECT id FROM \(table) WHERE uuid IS NULL OR uuid = ''")
+                    for row in missing {
+                        try db.execute("UPDATE \(table) SET uuid = ? WHERE id = ?",
+                                       [.text(UUID().uuidString), .integer(row.int("id"))])
+                    }
+                    try db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_\(table)_uuid ON \(table)(uuid)")
+                }
+
+                let projectCols = try db.query("PRAGMA table_info(projects)").map { $0.string("name") }
+                if !projectCols.contains("synced") {
+                    try db.execute("ALTER TABLE projects ADD COLUMN synced INTEGER NOT NULL DEFAULT 0")
+                }
+                let docCols = try db.query("PRAGMA table_info(documents)").map { $0.string("name") }
+                if !docCols.contains("content_hash") {
+                    try db.execute("ALTER TABLE documents ADD COLUMN content_hash TEXT")
+                }
+
+                try db.execute("""
+                    CREATE TABLE IF NOT EXISTS ops (
+                        id           INTEGER PRIMARY KEY,
+                        entity       TEXT NOT NULL,
+                        entity_uuid  TEXT NOT NULL,
+                        kind         TEXT NOT NULL,
+                        field        TEXT,
+                        value        TEXT,
+                        parent_uuid  TEXT,
+                        device_id    TEXT NOT NULL,
+                        hlc          TEXT NOT NULL,
+                        created_at   TEXT NOT NULL
+                    )
+                    """)
+                try db.execute("CREATE INDEX IF NOT EXISTS idx_ops_device ON ops(device_id, id)")
+                try db.execute("CREATE INDEX IF NOT EXISTS idx_ops_entity ON ops(entity_uuid)")
+
+                try db.execute("""
+                    CREATE TABLE IF NOT EXISTS field_stamps (
+                        entity_uuid  TEXT NOT NULL,
+                        field        TEXT NOT NULL,
+                        hlc          TEXT NOT NULL,
+                        PRIMARY KEY (entity_uuid, field)
+                    )
+                    """)
+                try db.execute("""
+                    CREATE TABLE IF NOT EXISTS tombstones (
+                        entity_uuid  TEXT PRIMARY KEY,
+                        entity       TEXT NOT NULL,
+                        hlc          TEXT NOT NULL
+                    )
+                    """)
+                try db.execute("""
+                    CREATE TABLE IF NOT EXISTS sync_devices (
+                        device_id    TEXT PRIMARY KEY,
+                        name         TEXT NOT NULL,
+                        is_self      INTEGER NOT NULL DEFAULT 0,
+                        cursor       INTEGER NOT NULL DEFAULT 0
+                    )
+                    """)
+                try db.execute("""
+                    CREATE TABLE IF NOT EXISTS sync_blobs (
+                        hash         TEXT PRIMARY KEY,
+                        size         INTEGER NOT NULL,
+                        created_at   TEXT NOT NULL
+                    )
+                    """)
+                try db.execute("PRAGMA user_version = 4")
+            }
+        }
     }
 }
