@@ -181,6 +181,42 @@ final class ReviewTests: XCTestCase {
             .contains { $0.message == "moved from In Progress to Todo" })
     }
 
+    // Rejecting a proposal whose task is ALREADY todo settles the doc but must
+    // not emit a redundant status-move activity (the no-op branch).
+    func testRejectVerdictLeavesAlreadyTodoTaskUnchanged() throws {
+        let todoTask = try repo.createTask(projectId: projectId, title: "Todo", status: .todo)
+        let docId = try repo.submitForReview(taskId: todoTask, path: "/tmp/t.md")
+        try repo.applyVerdict(.reject, documentId: docId)
+        XCTAssertEqual(try repo.document(id: docId)!.state, .rejected)
+        let task = try repo.getTask(id: todoTask)!.task
+        XCTAssertNil(task.attention)
+        XCTAssertEqual(task.status, .todo)
+        XCTAssertFalse(try repo.getTask(id: todoTask)!.activity.contains { $0.message.contains("moved") },
+                       "no status-move activity when the task was already Todo")
+    }
+
+    // reviewQueue orders newest-first (COALESCE(updated_at, created_at) DESC, id DESC).
+    func testReviewQueueOrdersNewestFirst() throws {
+        let taskB = try repo.createTask(projectId: projectId, title: "B")
+        let a = try repo.submitForReview(taskId: taskId, path: "/tmp/a.md")
+        let b = try repo.submitForReview(taskId: taskB, path: "/tmp/b.md")
+        XCTAssertEqual(try repo.reviewQueue().map(\.document.id), [b, a],
+                       "the most recently submitted proposal sorts first")
+    }
+
+    // updateAnnotation/deleteAnnotation throw on an unknown id, like resolveAnnotation.
+    func testUpdateAnnotationThrowsForUnknownId() throws {
+        XCTAssertThrowsError(try repo.updateAnnotation(id: 999_999, comment: "x")) { error in
+            guard case Repository.RepositoryError.notFound = error else { return XCTFail("expected notFound, got \(error)") }
+        }
+    }
+
+    func testDeleteAnnotationThrowsForUnknownId() throws {
+        XCTAssertThrowsError(try repo.deleteAnnotation(id: 999_999)) { error in
+            guard case Repository.RepositoryError.notFound = error else { return XCTFail("expected notFound, got \(error)") }
+        }
+    }
+
     // Rejection is feedback, not a tombstone: resubmitting the same path
     // revives the document as the next round, keeping the rejection history.
     func testResubmitAfterRejectRevives() throws {

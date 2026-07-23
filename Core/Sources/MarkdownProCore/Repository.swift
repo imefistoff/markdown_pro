@@ -762,6 +762,9 @@ public final class Repository {
 
     public func updateAnnotation(id: Int64, comment: String) throws {
         try db.transaction {
+            guard try db.query("SELECT id FROM annotations WHERE id = ?", [.integer(id)]).first != nil else {
+                throw RepositoryError.notFound("annotation \(id)")
+            }
             try db.execute("UPDATE annotations SET comment = ? WHERE id = ?", [.text(comment), .integer(id)])
             if let uuid = try entityUUID(.annotation, id: id), let projectId = try projectId(forAnnotation: id) {
                 try recordUpdate(.annotation, uuid: uuid, projectId: projectId, field: "comment", value: .text(comment))
@@ -771,6 +774,9 @@ public final class Repository {
 
     public func deleteAnnotation(id: Int64) throws {
         try db.transaction {
+            guard try db.query("SELECT id FROM annotations WHERE id = ?", [.integer(id)]).first != nil else {
+                throw RepositoryError.notFound("annotation \(id)")
+            }
             if let uuid = try entityUUID(.annotation, id: id), let projectId = try projectId(forAnnotation: id) {
                 try recordDelete(.annotation, uuid: uuid, projectId: projectId)
             }
