@@ -787,6 +787,21 @@ public final class Repository {
         }
     }
 
+    /// Count of annotations that are actionable *right now*: open comments
+    /// stamped with the document's current round. Mirrors the Review Center's
+    /// `currentComments` (`ReviewCenterView.swift`) so the MCP's
+    /// `open_annotations` scalar and the app's actionable set never disagree.
+    /// Prior-round opens — left behind when a proposal is resubmitted without
+    /// resolving every comment — are excluded: they are history, not work.
+    public func openAnnotationCount(documentId: Int64) throws -> Int {
+        guard let doc = try document(id: documentId) else {
+            throw RepositoryError.notFound("document \(documentId)")
+        }
+        return try annotations(documentId: documentId)
+            .filter { $0.round == doc.round && $0.state == .open }
+            .count
+    }
+
     public func resolveAnnotation(id: Int64, reply: String, actor: String = "claude") throws {
         guard let row = try db.query("SELECT document_id FROM annotations WHERE id = ?",
                                      [.integer(id)]).first else {

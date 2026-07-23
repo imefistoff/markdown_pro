@@ -107,6 +107,50 @@ final class ReviewTests: XCTestCase {
         XCTAssertEqual(try repo.annotations(documentId: docId).first { $0.id == annId }?.round, 2)
     }
 
+    // open_annotations is round-scoped: only OPEN comments stamped with the
+    // document's CURRENT round count. Prior-round opens left behind on
+    // resubmit are history, not actionable work.
+    func testOpenAnnotationCountIsRoundScoped() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+
+        // Round 1: two comments; resolve one, leave the other open.
+        let a = try repo.addAnnotation(documentId: docId, quote: "A",
+                                       comment: "fix A")
+        _ = try repo.addAnnotation(documentId: docId, quote: "B", comment: "fix B")
+        try repo.resolveAnnotation(id: a, reply: "done")
+
+        // Resubmit WITHOUT resolving B -> document bumps to round 2, B stays
+        // an open round-1 annotation.
+        _ = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        XCTAssertEqual(try repo.document(id: docId)!.round, 2)
+
+        // A fresh open comment on round 2.
+        _ = try repo.addAnnotation(documentId: docId, quote: "C", comment: "fix C")
+
+        // Round-scoped: only C is actionable now.
+        XCTAssertEqual(try repo.openAnnotationCount(documentId: docId), 1)
+        // Sanity: the naive all-rounds filter would over-count (B + C).
+        XCTAssertEqual(
+            try repo.annotations(documentId: docId).filter { $0.state == .open }.count,
+            2)
+
+        // Resolving the current-round comment drains the count to zero;
+        // the stale round-1 open still does not resurface it.
+        try repo.resolveAnnotation(
+            id: try repo.annotations(documentId: docId).first { $0.quote == "C" }!.id,
+            reply: "done")
+        XCTAssertEqual(try repo.openAnnotationCount(documentId: docId), 0)
+    }
+
+    // Missing document id throws, like its sibling lookups.
+    func testOpenAnnotationCountThrowsForUnknownDocument() throws {
+        XCTAssertThrowsError(try repo.openAnnotationCount(documentId: 999_999)) { error in
+            guard case Repository.RepositoryError.notFound = error else {
+                return XCTFail("expected RepositoryError.notFound, got \(error)")
+            }
+        }
+    }
+
     // Approve: doc approved, task ready_to_execute
     func testApproveVerdict() throws {
         let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
