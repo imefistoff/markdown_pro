@@ -112,6 +112,8 @@ struct AttentionChip: View {
     var body: some View {
         SwiftUI.Label(text, systemImage: icon)
             .font(.caption2)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(color)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
