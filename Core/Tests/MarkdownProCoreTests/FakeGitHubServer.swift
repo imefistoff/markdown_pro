@@ -8,12 +8,16 @@ final class FakeGitHubServer {
     static var repoExists = true
     static var lastAuthHeader: String?
     static var forceStatus: Int?
+    static var staleListingPaths: Set<String> = []
+    static var conflictOnce: Set<String> = []
 
     static func reset() {
         files = [:]
         repoExists = true
         lastAuthHeader = nil
         forceStatus = nil
+        staleListingPaths = []
+        conflictOnce = []
     }
 
     /// A URLSession whose only protocol is the fake.
@@ -53,7 +57,8 @@ final class FakeGitHubURLProtocol: URLProtocol {
             case "GET":
                 // A directory listing if any file has this prefix and no exact file.
                 if FakeGitHubServer.files[repoPath] == nil {
-                    let children = FakeGitHubServer.files.keys.filter { $0.hasPrefix(repoPath + "/") }
+                    let children = FakeGitHubServer.files.keys
+                        .filter { $0.hasPrefix(repoPath + "/") && !FakeGitHubServer.staleListingPaths.contains($0) }
                         .map { String($0.dropFirst(repoPath.count + 1)).split(separator: "/").first.map(String.init) ?? "" }
                     if children.isEmpty { return finish(404, Data()) }
                     let arr = Array(Set(children)).map { ["name": $0, "path": repoPath + "/" + $0] }
@@ -62,9 +67,24 @@ final class FakeGitHubURLProtocol: URLProtocol {
                 let data = FakeGitHubServer.files[repoPath]!
                 return finishJSON(200, ["content": data.base64EncodedString(), "sha": sha(repoPath), "encoding": "base64"])
             case "PUT":
+                if FakeGitHubServer.conflictOnce.remove(repoPath) != nil {
+                    return finishJSON(409, ["message": "conflict: sha is not up to date"])
+                }
                 let body = (try? JSONSerialization.jsonObject(with: request.httpBodyData())) as? [String: Any]
                 let b64 = body?["content"] as? String ?? ""
-                FakeGitHubServer.files[repoPath] = Data(base64Encoded: b64) ?? Data()
+                let providedSha = body?["sha"] as? String
+                let newData = Data(base64Encoded: b64) ?? Data()
+                if FakeGitHubServer.files[repoPath] != nil {
+                    guard let providedSha else {
+                        return finishJSON(422, ["message": "Invalid request.\n\n\"sha\" wasn't supplied."])
+                    }
+                    guard providedSha == sha(repoPath) else {
+                        return finishJSON(409, ["message": "sha does not match"])
+                    }
+                    FakeGitHubServer.files[repoPath] = newData
+                    return finishJSON(200, ["content": ["path": repoPath]])
+                }
+                FakeGitHubServer.files[repoPath] = newData
                 return finishJSON(201, ["content": ["path": repoPath]])
             default:
                 return finish(405, Data())

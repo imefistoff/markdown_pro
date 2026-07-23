@@ -94,4 +94,18 @@ final class GitHubTransportTests: XCTestCase {
         // The malformed roster file was NOT overwritten with a self-only roster.
         XCTAssertEqual(FakeGitHubServer.files["devices.json"], Data("not valid json".utf8))
     }
+
+    // The fake now models GitHub's sha contract, so the real API surfaces 422/409.
+    func testFakeEnforcesShaOnPut() throws {
+        let api = GitHubAPI(owner: "o", repo: "r", token: "t", session: FakeGitHubServer.session())
+        try api.putContent("f.txt", data: Data("one".utf8), message: "create", sha: nil)   // 201
+        // Overwrite without a sha must be rejected.
+        XCTAssertThrowsError(try api.putContent("f.txt", data: Data("two".utf8), message: "x", sha: nil)) { error in
+            guard case GitHubError.http(422, _) = error else { return XCTFail("expected 422, got \(error)") }
+        }
+        // Overwrite with the current sha succeeds.
+        let existing = try api.getContent("f.txt")
+        try api.putContent("f.txt", data: Data("two".utf8), message: "x", sha: existing?.sha)
+        XCTAssertEqual(FakeGitHubServer.files["f.txt"], Data("two".utf8))
+    }
 }
