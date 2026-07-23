@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import MarkdownProCore
 
 struct TaskDetailView: View {
@@ -12,6 +14,8 @@ struct TaskDetailView: View {
     @State private var newSubtask = ""
     @State private var newLabel = ""
     @State private var newNote = ""
+    @State private var attachments: [URL] = []
+    @State private var preview: AttachmentPreview?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,6 +27,7 @@ struct TaskDetailView: View {
             }
         }
         .onAppear(perform: reload)
+        .sheet(item: $preview) { p in ImagePreviewSheet(url: p.url) }
     }
 
     private func reload() {
@@ -31,6 +36,7 @@ struct TaskDetailView: View {
             title = detail.task.title
             details = detail.task.details
         }
+        attachments = TaskAttachments.imageURLs(taskId: taskId)
     }
 
     private func content(_ detail: TaskDetail) -> some View {
@@ -131,10 +137,12 @@ struct TaskDetailView: View {
                             .font(.body.monospaced())
                             .frame(minHeight: 80, maxHeight: 180)
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                            .onPasteCommand(of: [.image]) { _ in pasteImage() }
                         if details != detail.task.details {
                             Button("Save description", action: commitTextEdits)
                                 .controlSize(.small)
                         }
+                        attachmentStrip
                     }
 
                     // Subtasks
@@ -287,6 +295,45 @@ struct TaskDetailView: View {
                 reload()
             }
             .controlSize(.small)
+        }
+    }
+
+    // Pasted image → save to the task's attachment folder, drop an [image N]
+    // token at the end of the description, and refresh the thumbnail strip.
+    private func pasteImage() {
+        guard let image = NSImage(pasteboard: .general) else { return }
+        do {
+            let n = try TaskAttachments.save(image, taskId: taskId)
+            let sep = (details.isEmpty || details.hasSuffix("\n")) ? "" : "\n"
+            details += "\(sep)[image \(n)]"
+            commitTextEdits()   // persists the token; reload() refreshes attachments
+        } catch {
+            store.errorMessage = "Couldn't attach image: \(error)"
+        }
+    }
+
+    @ViewBuilder private var attachmentStrip: some View {
+        if !attachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(attachments.enumerated()), id: \.element) { idx, url in
+                        if let img = NSImage(contentsOf: url) {
+                            Button { preview = AttachmentPreview(url: url) } label: {
+                                VStack(spacing: 2) {
+                                    Image(nsImage: img)
+                                        .resizable().scaledToFill()
+                                        .frame(width: 48, height: 48).clipped()
+                                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.quaternary))
+                                    Text("image \(idx + 1)").font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("Preview \(url.lastPathComponent)")
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
         }
     }
 
