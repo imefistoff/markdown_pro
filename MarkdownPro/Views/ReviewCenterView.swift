@@ -89,8 +89,12 @@ private struct ReviewDocumentView: View {
     @State private var scrollTarget: Int64?
     @State private var confirmReject = false
     @State private var confirmApproveWithComments = false
+    @State private var navIndex = -1
 
     private var currentRound: Int { item.document.round }
+
+    // Visual order for annotation-jump (⌥←/⌥→): current round first, then earlier.
+    private var navAnnotations: [MarkdownProCore.Annotation] { currentComments + pastComments }
     /// Open comments made this round — painted in the doc, sent with the verdict.
     private var currentComments: [MarkdownProCore.Annotation] {
         annotations.filter { $0.round == currentRound && $0.state == .open }
@@ -140,6 +144,7 @@ private struct ReviewDocumentView: View {
         markdown = (try? String(contentsOfFile: item.document.path, encoding: .utf8))
             ?? "⚠️ Could not read `\(item.document.path)`"
         annotations = store.annotations(documentId: item.document.id)
+        navIndex = -1
     }
 
     private func reloadAnnotations() {
@@ -172,8 +177,35 @@ private struct ReviewDocumentView: View {
         onVerdict()
     }
 
+    // Cycle the "active" annotation and scroll the panel to it.
+    private func jump(_ delta: Int) {
+        let list = navAnnotations
+        guard !list.isEmpty else { return }
+        navIndex = navIndex < 0 ? (delta > 0 ? 0 : list.count - 1)
+                                : (navIndex + delta + list.count) % list.count
+        scrollTarget = list[navIndex].id
+    }
+
+    @ViewBuilder private func activeBorder(_ id: Int64) -> some View {
+        if navIndex >= 0, navAnnotations.indices.contains(navIndex), navAnnotations[navIndex].id == id {
+            RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2)
+        }
+    }
+
     private var verdictBar: some View {
         HStack(spacing: 10) {
+            if !navAnnotations.isEmpty {
+                Button { jump(-1) } label: { Image(systemName: "chevron.left") }
+                    .keyboardShortcut(.leftArrow, modifiers: .option)
+                    .help("Previous annotation (⌥←)")
+                Text(navIndex >= 0 ? "\(navIndex + 1)/\(navAnnotations.count)" : "\(navAnnotations.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button { jump(1) } label: { Image(systemName: "chevron.right") }
+                    .keyboardShortcut(.rightArrow, modifiers: .option)
+                    .help("Next annotation (⌥→)")
+                Divider().frame(height: 14)
+            }
             Text("\(currentComments.count) comment\(currentComments.count == 1 ? "" : "s") this round")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -205,13 +237,13 @@ private struct ReviewDocumentView: View {
                     if !currentComments.isEmpty {
                         panelSection("Round \(currentRound)") {
                             ForEach(currentComments) { a in
-                                commentRow(a).id(a.id)
+                                commentRow(a).id(a.id).overlay(activeBorder(a.id))
                             }
                         }
                     }
                     if !pastComments.isEmpty {
                         panelSection("Earlier") {
-                            ForEach(pastComments) { a in resolvedRow(a) }
+                            ForEach(pastComments) { a in resolvedRow(a).id(a.id).overlay(activeBorder(a.id)) }
                         }
                     }
                 }
