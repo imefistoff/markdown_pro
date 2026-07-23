@@ -81,13 +81,21 @@ extension LaunchTests {
         XCTAssertTrue(s.script.contains("keep 10 drop {not_a_real_placeholder}"))
     }
 
-    func testSpecNeverGetsWorktreeAndForcesPlanMode() throws {
-        let s = try LaunchScriptBuilder.script(
+    func testSpecHonorsWorktreeButForcesPlanMode() throws {
+        // Spec launches now isolate in a worktree when enabled, but always run
+        // in plan permission-mode (never unsafe).
+        let on = try LaunchScriptBuilder.script(
             task: task(), document: doc(.spec), settings: settings(preset: .bypassPermissions, worktree: true))
-        XCTAssertFalse(s.command.contains("-w "), "planning must not open a worktree")
-        XCTAssertTrue(s.command.contains("--permission-mode plan"))
-        XCTAssertNil(s.worktreeSlug)
-        XCTAssertFalse(s.isUnsafe, "planning is always plan-mode, never unsafe")
+        XCTAssertTrue(on.command.contains("-w "), "spec launch should open a worktree when enabled")
+        XCTAssertNotNil(on.worktreeSlug)
+        XCTAssertTrue(on.command.contains("--permission-mode plan"))
+        XCTAssertFalse(on.isUnsafe, "planning is always plan-mode, never unsafe")
+
+        let off = try LaunchScriptBuilder.script(
+            task: task(), document: doc(.spec), settings: settings(preset: .bypassPermissions, worktree: false))
+        XCTAssertFalse(off.command.contains("-w "), "no worktree when disabled")
+        XCTAssertNil(off.worktreeSlug)
+        XCTAssertTrue(off.command.contains("--permission-mode plan"))
     }
 
     func testPlanHonorsWorktreeAndPreset() throws {

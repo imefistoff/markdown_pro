@@ -74,9 +74,10 @@ public struct LaunchScriptBuilder {
         let promptLines = prompt.components(separatedBy: .newlines)
         guard !promptLines.contains(heredocDelimiter) else { throw LaunchError.promptContainsDelimiter }
 
-        // Flags are structural (not part of the editable prompt). Planning is
-        // always plan-mode with no worktree; execution honours settings.
-        let usesWorktree = (document.kind == .plan) && settings.useWorktree
+        // Flags are structural (not part of the editable prompt). Both spec and
+        // plan launches isolate in a worktree when enabled; spec still forces
+        // plan-mode below.
+        let usesWorktree = settings.useWorktree
         let effectivePreset: PermissionPreset = (document.kind == .spec) ? .plan : settings.permissionPreset
         let commandSlug = usesWorktree ? slug : nil
 
