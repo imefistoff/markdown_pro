@@ -120,6 +120,10 @@ private struct ReviewDocumentView: View {
         // A resubmission bumps the round on the same document row; reload so
         // the rendered text can't go stale while this doc stays selected.
         .onChange(of: item.document.round) { _, _ in load() }
+        // Claude may resolve an annotation without resubmitting (round unchanged);
+        // the poll refreshes reviewQueue, so reload annotations to drop the
+        // resolved one from the panel while the doc stays open.
+        .onReceive(store.$reviewQueue) { _ in reloadAnnotations() }
         .confirmationDialog("Reject this proposal?", isPresented: $confirmReject) {
             Button("Reject — task returns to Todo", role: .destructive) { verdict(.reject) }
         } message: {

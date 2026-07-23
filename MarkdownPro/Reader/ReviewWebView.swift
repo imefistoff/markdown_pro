@@ -62,7 +62,19 @@ struct ReviewWebView: NSViewRepresentable {
         func push(markdown: String, baseURL: URL?, annotations: [MarkdownProCore.Annotation]) {
             guard pageLoaded, let webView else { return }
 
-            // Annotations first: renderMarkdown ends with __reviewRepaint().
+            // Render first so annotations anchor against the CURRENT DOM. Setting
+            // annotations against the old DOM (before a re-render) briefly flashes
+            // them "Unanchored" until renderMarkdown's trailing __reviewRepaint()
+            // corrects them.
+            let key = (baseURL?.path ?? "") + "|" + markdown
+            if key != lastRendered {
+                lastRendered = key
+                if let payload = try? JSONSerialization.data(withJSONObject: [markdown, baseURL?.absoluteString ?? ""]) {
+                    let json = String(decoding: payload, as: UTF8.self)
+                    webView.evaluateJavaScript("window.renderMarkdown((\(json))[0], (\(json))[1])")
+                }
+            }
+
             let list = annotations.map { a -> [String: Any] in
                 ["id": a.id, "quote": a.quote, "prefix": a.prefix, "suffix": a.suffix]
             }
@@ -71,15 +83,6 @@ struct ReviewWebView: NSViewRepresentable {
                 if json != lastAnnotationsJSON {
                     lastAnnotationsJSON = json
                     webView.evaluateJavaScript("window.setReviewAnnotations(\(json))")
-                }
-            }
-
-            let key = (baseURL?.path ?? "") + "|" + markdown
-            if key != lastRendered {
-                lastRendered = key
-                if let payload = try? JSONSerialization.data(withJSONObject: [markdown, baseURL?.absoluteString ?? ""]) {
-                    let json = String(decoding: payload, as: UTF8.self)
-                    webView.evaluateJavaScript("window.renderMarkdown((\(json))[0], (\(json))[1])")
                 }
             }
         }

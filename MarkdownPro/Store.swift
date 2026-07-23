@@ -126,9 +126,13 @@ final class Store: ObservableObject {
             projects = try repo.listProjects()
             tasks = try repo.listTasks()
             let queue = try repo.reviewQueue()
-            if let known = knownReviewDocIds,
-               let fresh = queue.first(where: { !known.contains($0.id) }) {
-                toast = "Proposal ready: \(fresh.document.title)"
+            if let known = knownReviewDocIds {
+                let fresh = queue.filter { !known.contains($0.id) }
+                if fresh.count == 1 {
+                    toast = "Proposal ready: \(fresh[0].document.title)"
+                } else if fresh.count > 1 {
+                    toast = "\(fresh.count) proposals ready"
+                }
             }
             knownReviewDocIds = Set(queue.map(\.id))
             reviewQueue = queue
