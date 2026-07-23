@@ -95,6 +95,17 @@ final class GitHubTransportTests: XCTestCase {
         XCTAssertEqual(FakeGitHubServer.files["devices.json"], Data("not valid json".utf8))
     }
 
+    // devices.json is now written before ops, so a malformed roster must block
+    // the ops write entirely — no duplicate-batch accumulation on retry.
+    func testMalformedDevicesJsonBlocksOpsWrite() throws {
+        FakeGitHubServer.files["devices.json"] = Data("not json".utf8)
+        XCTAssertThrowsError(try transport("devA").publish(
+            ops: [op(1, device: "devA")], blobs: [], selfDevice: SyncDevice(deviceId: "devA", name: "A"))) { error in
+            guard case GitHubError.malformed = error else { return XCTFail("expected .malformed, got \(error)") }
+        }
+        XCTAssertNil(FakeGitHubServer.files["ops/devA/1.jsonl"], "ops must not be written when devices.json fails")
+    }
+
     // The fake now models GitHub's sha contract, so the real API surfaces 422/409.
     func testFakeEnforcesShaOnPut() throws {
         let api = GitHubAPI(owner: "o", repo: "r", token: "t", session: FakeGitHubServer.session())

@@ -22,6 +22,33 @@ public final class GitHubTransport: SyncTransport {
         for blob in blobs where try api.getContent("blobs/\(blob.hash)") == nil {
             _ = try api.createFile("blobs/\(blob.hash)", data: blob.data, message: "blob \(blob.hash)")
         }
+        // Register self in devices.json (read-modify-write; retry if a concurrent
+        // writer moves the sha out from under us).
+        var attempt = 0
+        while true {
+            attempt += 1
+            var roster: [String: String] = [:]
+            var sha: String?
+            if let existing = try api.getContent("devices.json") {
+                guard let map = try? JSONSerialization.jsonObject(with: existing.data) as? [String: String] else {
+                    throw GitHubError.malformed("devices.json")
+                }
+                roster = map
+                sha = existing.sha
+            }
+            roster[selfDevice.deviceId] = selfDevice.name
+            let payload = try JSONSerialization.data(withJSONObject: roster, options: [.sortedKeys])
+            do {
+                try api.putContent("devices.json", data: payload, message: "devices", sha: sha)
+                break
+            } catch let error as GitHubError {
+                if case .http(let code, _) = error, code == 409 || code == 422, attempt < 3 { continue }
+                throw error
+            }
+        }
+        // Ops are written last: if devices.json fails (e.g. malformed remote
+        // roster), we throw before any ops are written, so a retry never lands
+        // a duplicate batch.
         // One immutable batch file under our own device directory. Under eventual
         // consistency a just-written seq can be invisible to listDir; GET-and-compare
         // resolves it without dropping ops.
@@ -47,30 +74,6 @@ public final class GitHubTransport: SyncTransport {
                         seq += 1           // a different batch holds this seq
                     }
                 }
-            }
-        }
-        // Register self in devices.json (read-modify-write; retry if a concurrent
-        // writer moves the sha out from under us).
-        var attempt = 0
-        while true {
-            attempt += 1
-            var roster: [String: String] = [:]
-            var sha: String?
-            if let existing = try api.getContent("devices.json") {
-                guard let map = try? JSONSerialization.jsonObject(with: existing.data) as? [String: String] else {
-                    throw GitHubError.malformed("devices.json")
-                }
-                roster = map
-                sha = existing.sha
-            }
-            roster[selfDevice.deviceId] = selfDevice.name
-            let payload = try JSONSerialization.data(withJSONObject: roster, options: [.sortedKeys])
-            do {
-                try api.putContent("devices.json", data: payload, message: "devices", sha: sha)
-                return
-            } catch let error as GitHubError {
-                if case .http(let code, _) = error, code == 409 || code == 422, attempt < 3 { continue }
-                throw error
             }
         }
     }
