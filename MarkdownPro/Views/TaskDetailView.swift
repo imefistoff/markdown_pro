@@ -64,7 +64,7 @@ struct TaskDetailView: View {
                         .onSubmit(commitTextEdits)
                         .accessibilityIdentifier("taskTitleField")
 
-                    // Status / priority / due date
+                    // Metadata: status / priority / due date
                     HStack(spacing: 16) {
                         Picker("Status", selection: statusBinding(detail)) {
                             ForEach(TaskStatus.boardColumns) { s in
@@ -79,7 +79,12 @@ struct TaskDetailView: View {
                         }
                         .fixedSize()
                         dueDateControl(detail)
-                        if let attention = detail.task.attention {
+                        Spacer()
+                    }
+
+                    // Actions: attention chip + optional Clear + right-aligned Launch
+                    if let attention = detail.task.attention {
+                        HStack(spacing: 12) {
                             AttentionChip(text: attention.displayName,
                                           icon: attention.iconName,
                                           color: attention.color)
@@ -91,9 +96,9 @@ struct TaskDetailView: View {
                                 .controlSize(.small)
                                 .help("Clear the Executing flag if the session was stopped")
                             }
+                            Spacer()
+                            LaunchButton(task: detail.task)
                         }
-                        LaunchButton(task: detail.task)
-                        Spacer()
                     }
 
                     // Labels
