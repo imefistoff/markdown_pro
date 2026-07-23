@@ -1,3 +1,8 @@
+# Obsidian (in-repo vault at docs/vault) — ignore per-machine layout, keep shared config
+docs/vault/.obsidian/workspace.json
+docs/vault/.obsidian/workspace-mobile.json
+docs/vault/.obsidian/workspace.json.bak
+
 # Xcode
 #
 # gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
