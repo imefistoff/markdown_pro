@@ -190,6 +190,7 @@ struct BoardColumn: View {
 }
 
 struct TaskCardView: View {
+    @EnvironmentObject private var store: Store
     let task: TaskItem
 
     var body: some View {
@@ -254,6 +255,11 @@ struct TaskCardView: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityIdentifier("taskCard-\(task.title)")
+        .contextMenu {
+            if task.attention == .executing {
+                Button("Cancel execution") { store.cancelExecution(taskId: task.id) }
+            }
+        }
     }
 }
 

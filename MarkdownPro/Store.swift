@@ -410,6 +410,12 @@ final class Store: ObservableObject {
         perform { try $0.setAttention(taskId: taskId, attention: nil, actor: "user") }
     }
 
+    /// Recover a task stuck in `executing` (its Claude session died): clear the
+    /// flag back to `ready_to_execute` so it can be launched again manually.
+    func cancelExecution(taskId: Int64) {
+        perform { try $0.setAttention(taskId: taskId, attention: .readyToExecute, actor: "user") }
+    }
+
     // MARK: - Stats
 
     func completionsByDay(days: Int = 14) -> [Repository.DayCount] {

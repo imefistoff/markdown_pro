@@ -95,12 +95,12 @@ struct TaskDetailView: View {
                                           icon: attention.iconName,
                                           color: attention.color)
                             if attention == .executing {
-                                Button("Clear") {
-                                    store.clearAttention(taskId: taskId)
+                                Button("Cancel execution") {
+                                    store.cancelExecution(taskId: taskId)
                                     reload()
                                 }
                                 .controlSize(.small)
-                                .help("Clear the Executing flag if the session was stopped")
+                                .help("Stop tracking this session and make the task launchable again")
                             }
                             Spacer()
                             LaunchButton(task: detail.task)
