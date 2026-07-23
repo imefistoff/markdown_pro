@@ -138,8 +138,7 @@ final class MCPServer {
             dict["linked_documents"] = try detail.documents.map { doc -> [String: Any] in
                 var d = Encode.document(doc)
                 if doc.kind.isReviewable {
-                    d["open_annotations"] = try repo.annotations(documentId: doc.id)
-                        .filter { $0.state == .open }.count
+                    d["open_annotations"] = try repo.openAnnotationCount(documentId: doc.id)
                 }
                 return d
             }
@@ -259,7 +258,7 @@ final class MCPServer {
             let annotations = try repo.annotations(documentId: docId)
             var dict = Encode.document(doc)
             dict["annotations"] = annotations.map(Encode.annotation)
-            dict["open_annotations"] = annotations.filter { $0.state == .open }.count
+            dict["open_annotations"] = try repo.openAnnotationCount(documentId: docId)
             return jsonText(dict)
 
         case "resolve_annotation":

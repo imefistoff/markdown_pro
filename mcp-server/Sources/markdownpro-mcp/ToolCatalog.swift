@@ -158,7 +158,10 @@ enum ToolCatalog {
         tool("get_review_feedback",
              "Get the review state and the user's inline annotations for a proposal. " +
              "Open annotations on a changes_requested doc are the actionable feedback: " +
-             "each has the quoted text plus surrounding context and the user's comment.",
+             "each has the quoted text plus surrounding context and the user's comment. " +
+             "`open_annotations` counts only the open comments in the current round " +
+             "(what you still need to address before resubmitting); the full `annotations` " +
+             "array spans all rounds, each tagged with its `round`.",
              properties: [
                 "document_id": ["type": "integer", "description": "Document id (from submit_for_review or get_task)"]
              ],
