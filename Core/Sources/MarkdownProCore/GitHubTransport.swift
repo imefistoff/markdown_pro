@@ -18,32 +18,61 @@ public final class GitHubTransport: SyncTransport {
     public func verifyAccess() throws -> Bool { try api.getRepoExists() }
 
     public func publish(ops: [Op], blobs: [Blob], selfDevice: SyncDevice) throws {
-        // Blobs are content-addressed: write once, skip if already present.
+        // Blobs are content-addressed: skip if present, tolerate a lost race.
         for blob in blobs where try api.getContent("blobs/\(blob.hash)") == nil {
-            try api.putContent("blobs/\(blob.hash)", data: blob.data, message: "blob \(blob.hash)", sha: nil)
+            _ = try api.createFile("blobs/\(blob.hash)", data: blob.data, message: "blob \(blob.hash)")
         }
-        // One immutable batch file under our own device directory.
+        // One immutable batch file under our own device directory. Under eventual
+        // consistency a just-written seq can be invisible to listDir; GET-and-compare
+        // resolves it without dropping ops.
         if !ops.isEmpty {
-            let maxSeq = try api.listDir("ops/\(deviceId)")
-                .compactMap { Int($0.replacingOccurrences(of: ".jsonl", with: "")) }.max() ?? 0
-            try api.putContent("ops/\(deviceId)/\(maxSeq + 1).jsonl", data: OpCodec.encode(ops),
-                               message: "ops \(deviceId) \(maxSeq + 1)", sha: nil)
-        }
-        // Register self in devices.json (read-modify-write; the one shared file).
-        var roster: [String: String] = [:]
-        var sha: String?
-        if let existing = try api.getContent("devices.json") {
-            // A malformed roster must never be silently replaced with a self-only
-            // one: throw so the engine treats this sync as a no-op and retries.
-            guard let map = try? JSONSerialization.jsonObject(with: existing.data) as? [String: String] else {
-                throw GitHubError.malformed("devices.json")
+            let encoded = OpCodec.encode(ops)
+            var seq = (try api.listDir("ops/\(deviceId)")
+                .compactMap { Int($0.replacingOccurrences(of: ".jsonl", with: "")) }.max() ?? 0) + 1
+            var published = false
+            var attempts = 0
+            while !published {
+                attempts += 1
+                guard attempts <= 8 else {
+                    throw GitHubError.http(422, "ops publish: exhausted seq attempts near \(seq)")
+                }
+                let path = "ops/\(deviceId)/\(seq).jsonl"
+                switch try api.createFile(path, data: encoded, message: "ops \(deviceId) \(seq)") {
+                case .created:
+                    published = true
+                case .alreadyExists:
+                    if let existing = try api.getRaw(path), existing == encoded {
+                        published = true   // our own retried batch
+                    } else {
+                        seq += 1           // a different batch holds this seq
+                    }
+                }
             }
-            roster = map
-            sha = existing.sha
         }
-        roster[selfDevice.deviceId] = selfDevice.name
-        let payload = try JSONSerialization.data(withJSONObject: roster, options: [.sortedKeys])
-        try api.putContent("devices.json", data: payload, message: "devices", sha: sha)
+        // Register self in devices.json (read-modify-write; retry if a concurrent
+        // writer moves the sha out from under us).
+        var attempt = 0
+        while true {
+            attempt += 1
+            var roster: [String: String] = [:]
+            var sha: String?
+            if let existing = try api.getContent("devices.json") {
+                guard let map = try? JSONSerialization.jsonObject(with: existing.data) as? [String: String] else {
+                    throw GitHubError.malformed("devices.json")
+                }
+                roster = map
+                sha = existing.sha
+            }
+            roster[selfDevice.deviceId] = selfDevice.name
+            let payload = try JSONSerialization.data(withJSONObject: roster, options: [.sortedKeys])
+            do {
+                try api.putContent("devices.json", data: payload, message: "devices", sha: sha)
+                return
+            } catch let error as GitHubError {
+                if case .http(let code, _) = error, code == 409 || code == 422, attempt < 3 { continue }
+                throw error
+            }
+        }
     }
 
     public func fetch(since cursors: [String: Int]) throws -> RemoteChanges {

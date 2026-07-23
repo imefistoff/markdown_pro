@@ -108,4 +108,54 @@ final class GitHubTransportTests: XCTestCase {
         try api.putContent("f.txt", data: Data("two".utf8), message: "x", sha: existing?.sha)
         XCTAssertEqual(FakeGitHubServer.files["f.txt"], Data("two".utf8))
     }
+
+    // A blob already present on the remote is not re-uploaded and does not error.
+    func testRepublishSameBlobIsNoOp() throws {
+        let a = transport("devA")
+        let dev = SyncDevice(deviceId: "devA", name: "A")
+        let blob = Blob(hash: "h1", data: Data("doc".utf8))
+        try a.publish(ops: [], blobs: [blob], selfDevice: dev)
+        try a.publish(ops: [], blobs: [blob], selfDevice: dev)   // must not throw
+        XCTAssertEqual(FakeGitHubServer.files["blobs/h1"], Data("doc".utf8))
+    }
+
+    // Retried publish under a stale directory listing: the batch already exists
+    // with identical bytes, so it resolves without 422 and without duplication.
+    func testOpsRetryUnderStaleListingIsIdempotent() throws {
+        let a = transport("devA")
+        let dev = SyncDevice(deviceId: "devA", name: "A")
+        let ops = [op(1, device: "devA")]
+        // Simulate a prior partial publish: batch 1 is already on the remote but
+        // invisible to the directory listing.
+        FakeGitHubServer.files["ops/devA/1.jsonl"] = OpCodec.encode(ops)
+        FakeGitHubServer.staleListingPaths = ["ops/devA/1.jsonl"]
+        try a.publish(ops: ops, blobs: [], selfDevice: dev)   // must not throw
+        XCTAssertNil(FakeGitHubServer.files["ops/devA/2.jsonl"], "identical batch must not duplicate")
+        XCTAssertEqual(FakeGitHubServer.files["ops/devA/1.jsonl"], OpCodec.encode(ops))
+    }
+
+    // A seq occupied by a *different* batch (stale listing) forces a bump, never
+    // dropping the new ops.
+    func testOpsCollisionWithDifferentContentBumpsSeq() throws {
+        let a = transport("devA")
+        let dev = SyncDevice(deviceId: "devA", name: "A")
+        let otherBytes = OpCodec.encode([op(99, device: "devA")])
+        FakeGitHubServer.files["ops/devA/1.jsonl"] = otherBytes
+        FakeGitHubServer.staleListingPaths = ["ops/devA/1.jsonl"]
+        let ops = [op(1, device: "devA")]
+        try a.publish(ops: ops, blobs: [], selfDevice: dev)
+        XCTAssertEqual(FakeGitHubServer.files["ops/devA/2.jsonl"], OpCodec.encode(ops))
+        XCTAssertEqual(FakeGitHubServer.files["ops/devA/1.jsonl"], otherBytes, "existing batch untouched")
+    }
+
+    // A concurrent writer moves devices.json's sha; publish retries and succeeds.
+    func testDevicesJsonConflictRetries() throws {
+        let a = transport("devA")
+        FakeGitHubServer.files["devices.json"] = Data("{\"devB\":\"B\"}".utf8)
+        FakeGitHubServer.conflictOnce = ["devices.json"]
+        try a.publish(ops: [], blobs: [], selfDevice: SyncDevice(deviceId: "devA", name: "A"))
+        let roster = try JSONSerialization.jsonObject(with: FakeGitHubServer.files["devices.json"]!) as! [String: String]
+        XCTAssertEqual(roster["devA"], "A")
+        XCTAssertEqual(roster["devB"], "B", "concurrent writer's entry preserved")
+    }
 }
