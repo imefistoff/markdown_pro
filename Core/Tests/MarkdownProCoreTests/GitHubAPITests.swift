@@ -44,4 +44,30 @@ final class GitHubAPITests: XCTestCase {
             FakeGitHubServer.forceStatus = nil
         }
     }
+
+    func testCreateFileNewPathIsCreated() throws {
+        FakeGitHubServer.reset()
+        let a = api()
+        let outcome = try a.createFile("blobs/h", data: Data("x".utf8), message: "m")
+        XCTAssertEqual(outcome, .created)
+        XCTAssertEqual(FakeGitHubServer.files["blobs/h"], Data("x".utf8))
+    }
+
+    func testCreateFileExistingPathIsAlreadyExistsAndDoesNotOverwrite() throws {
+        FakeGitHubServer.reset()
+        let a = api()
+        _ = try a.createFile("blobs/h", data: Data("orig".utf8), message: "m")
+        let outcome = try a.createFile("blobs/h", data: Data("different".utf8), message: "m")
+        XCTAssertEqual(outcome, .alreadyExists)
+        XCTAssertEqual(FakeGitHubServer.files["blobs/h"], Data("orig".utf8), "create must not overwrite")
+    }
+
+    func testCreateFileGenuineErrorRethrows() throws {
+        FakeGitHubServer.reset()
+        FakeGitHubServer.forceStatus = 500
+        let a = api()
+        XCTAssertThrowsError(try a.createFile("blobs/h", data: Data("x".utf8), message: "m")) { error in
+            guard case GitHubError.http(500, _) = error else { return XCTFail("expected 500, got \(error)") }
+        }
+    }
 }

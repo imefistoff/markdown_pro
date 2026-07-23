@@ -92,6 +92,20 @@ public struct GitHubAPI {
         }
     }
 
+    public enum CreateOutcome: Sendable, Equatable { case created, alreadyExists }
+
+    /// Create a file, never overwriting. If the path already exists — including a
+    /// 422/409 race where a prior existence check missed it — reports
+    /// `.alreadyExists` instead of throwing. Any other failure is rethrown.
+    public func createFile(_ path: String, data: Data, message: String) throws -> CreateOutcome {
+        let payload: [String: Any] = ["message": message, "content": data.base64EncodedString()]
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let (respData, code) = try send("PUT", contentsURL(path), body: body)
+        if code == 200 || code == 201 { return .created }
+        if code == 422 || code == 409, try getRaw(path) != nil { return .alreadyExists }
+        throw GitHubError.http(code, String(data: respData, encoding: .utf8) ?? "")
+    }
+
     /// Names of the immediate children of a directory, or [] if it doesn't exist.
     public func listDir(_ path: String) throws -> [String] {
         let (data, code) = try send("GET", contentsURL(path))
