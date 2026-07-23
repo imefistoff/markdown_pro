@@ -574,7 +574,11 @@ public final class Repository {
     @discardableResult
     public func attachDocument(taskId: Int64?, projectId: Int64?, path: String, title: String?,
                                kind: DocumentKind = .note) throws -> Int64 {
-        try db.transaction {
+        guard !kind.isReviewable else {
+            throw RepositoryError.invalidArgument(
+                "kind \(kind.rawValue) must go through submitForReview, not attachDocument")
+        }
+        return try db.transaction {
             let expanded = (path as NSString).expandingTildeInPath
             let resolvedTitle = title ?? (expanded as NSString).lastPathComponent
             let uuid = UUID().uuidString
@@ -835,6 +839,14 @@ public final class Repository {
     public func applyVerdict(_ verdict: ReviewVerdict, documentId: Int64, actor: String = "user") throws {
         guard let doc = try document(id: documentId) else {
             throw RepositoryError.notFound("document \(documentId)")
+        }
+        guard doc.kind.isReviewable else {
+            throw RepositoryError.invalidArgument(
+                "cannot apply a verdict to a \(doc.kind.rawValue) document")
+        }
+        guard doc.state == .needsReview else {
+            throw RepositoryError.invalidArgument(
+                "cannot apply a verdict; document state is \(doc.state?.rawValue ?? "none")")
         }
         guard let taskId = doc.taskId, let task = try getTask(id: taskId)?.task else {
             throw RepositoryError.notFound("task for document \(documentId)")

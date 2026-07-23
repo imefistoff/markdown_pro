@@ -238,6 +238,50 @@ final class ReviewTests: XCTestCase {
     func testVerdictOnMissingDocumentThrows() throws {
         XCTAssertThrowsError(try repo.applyVerdict(.approve, documentId: 999))
     }
+
+    // applyVerdict refuses a non-reviewable kind (a plain note is not a proposal).
+    func testApplyVerdictRejectsNonReviewableKind() throws {
+        let noteId = try repo.attachDocument(taskId: taskId, projectId: nil,
+                                             path: "/tmp/n.md", title: "note", kind: .note)
+        XCTAssertThrowsError(try repo.applyVerdict(.approve, documentId: noteId)) { error in
+            guard case Repository.RepositoryError.invalidArgument = error else {
+                return XCTFail("expected invalidArgument, got \(error)")
+            }
+        }
+    }
+
+    // applyVerdict refuses a second verdict; the first outcome stands.
+    func testApplyVerdictRejectsSecondVerdict() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/p.md")
+        try repo.applyVerdict(.approve, documentId: docId)
+        XCTAssertThrowsError(try repo.applyVerdict(.reject, documentId: docId)) { error in
+            guard case Repository.RepositoryError.invalidArgument = error else {
+                return XCTFail("expected invalidArgument, got \(error)")
+            }
+        }
+        XCTAssertEqual(try repo.document(id: docId)!.state, .approved)
+        XCTAssertEqual(try repo.getTask(id: taskId)!.task.attention, .readyToExecute)
+    }
+
+    // Regression: spec/plan are reviewable and must stay approvable (launch flow).
+    func testApplyVerdictApprovesSpecKind() throws {
+        let docId = try repo.submitForReview(taskId: taskId, path: "/tmp/s.md", kind: .spec)
+        try repo.applyVerdict(.approve, documentId: docId)
+        XCTAssertEqual(try repo.document(id: docId)!.state, .approved)
+        XCTAssertEqual(try repo.getTask(id: taskId)!.task.attention, .readyToExecute)
+    }
+
+    // attachDocument refuses reviewable kinds — they must go through submitForReview.
+    func testAttachDocumentRejectsReviewableKind() throws {
+        XCTAssertThrowsError(
+            try repo.attachDocument(taskId: taskId, projectId: nil,
+                                    path: "/tmp/p.md", title: "p", kind: .proposal)
+        ) { error in
+            guard case Repository.RepositoryError.invalidArgument = error else {
+                return XCTFail("expected invalidArgument, got \(error)")
+            }
+        }
+    }
 }
 
 extension ReviewTests {
